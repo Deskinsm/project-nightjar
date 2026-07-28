@@ -1,0 +1,20 @@
+{
+  "mission_id": "42b6a3fd-1b5c-4d2a-9c86-b82679b2f88c",
+  "description": "Take off to five meters, hold for ten seconds, return home, and land.",
+  "actions": [
+    {
+      "type": "takeoff",
+      "altitude_m": 5
+    },
+    {
+      "type": "hold",
+      "duration_seconds": 10
+    },
+    {
+      "type": "return_home"
+    },
+    {
+      "type": "land"
+    }
+  ]
+}

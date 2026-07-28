@@ -1,0 +1,19 @@
+{
+  "mission_id": "73b4676c-5c5e-46cc-bb9a-f02579b77e0f",
+  "description": "An intentionally unsafe mission for testing policy rejection.",
+  "actions": [
+    {
+      "type": "takeoff",
+      "altitude_m": 500
+    },
+    {
+      "type": "goto",
+      "north_m": 1000,
+      "east_m": 1000,
+      "altitude_m": 500
+    },
+    {
+      "type": "land"
+    }
+  ]
+}
