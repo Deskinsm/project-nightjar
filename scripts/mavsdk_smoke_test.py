@@ -23,9 +23,7 @@ async def wait_until_landed(drone: System) -> None:
 async def main() -> None:
     drone = System()
 
-    await drone.connect(
-        system_address="udpin://0.0.0.0:14540"
-    )
+    await drone.connect(system_address="udpin://127.0.0.1:14540")
 
     try:
         await asyncio.wait_for(

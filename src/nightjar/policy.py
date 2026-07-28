@@ -103,10 +103,7 @@ class PolicyEngine:
                         reasons.append(
                             f"{prefix}: no actions are allowed after landing; found {next_types}."
                         )
-                    elif any(
-                        item.type not in {ActionType.LAND}
-                        for item in remaining
-                    ):
+                    elif any(item.type not in {ActionType.LAND} for item in remaining):
                         reasons.append(
                             f"{prefix}: only land may follow return_home; found {next_types}."
                         )
