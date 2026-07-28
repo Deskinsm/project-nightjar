@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import Annotated, Literal, Union
+from typing import Annotated, Literal
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -47,13 +47,7 @@ class LandAction(StrictModel):
 
 
 MissionAction = Annotated[
-    Union[
-        TakeoffAction,
-        HoldAction,
-        GotoAction,
-        ReturnHomeAction,
-        LandAction,
-    ],
+    TakeoffAction | HoldAction | GotoAction | ReturnHomeAction | LandAction,
     Field(discriminator="type"),
 ]
 
@@ -64,7 +58,7 @@ class Mission(StrictModel):
     actions: tuple[MissionAction, ...] = Field(min_length=1, max_length=10)
 
     @model_validator(mode="after")
-    def requires_safe_termination(self) -> "Mission":
+    def requires_safe_termination(self) -> Mission:
         final_type = self.actions[-1].type
         if final_type not in {ActionType.RETURN_HOME, ActionType.LAND}:
             raise ValueError("Mission must end with return_home or land.")

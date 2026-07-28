@@ -4,6 +4,13 @@
 .pytest_cache/CACHEDIR.TAG
 .pytest_cache/README.md
 .pytest_cache/v/cache/nodeids
+.ruff_cache/.gitignore
+.ruff_cache/0.16.0/10081451949251054321
+.ruff_cache/0.16.0/11131685974025706533
+.ruff_cache/0.16.0/14658709181504091977
+.ruff_cache/0.16.0/15781136807536144870
+.ruff_cache/0.16.0/6437031714903950789
+.ruff_cache/CACHEDIR.TAG
 README.md
 REPOSITORY_TREE.txt
 docs/architecture.md
@@ -24,12 +31,14 @@ src/nightjar/__pycache__/cli.cpython-310.pyc
 src/nightjar/__pycache__/executor.cpython-310.pyc
 src/nightjar/__pycache__/models.cpython-310.pyc
 src/nightjar/__pycache__/policy.cpython-310.pyc
+src/nightjar/__pycache__/security.cpython-310.pyc
 src/nightjar/audit.py
 src/nightjar/cli.py
 src/nightjar/executor.py
 src/nightjar/models.py
 src/nightjar/planner.py
 src/nightjar/policy.py
+src/nightjar/security.py
 src/project_nightjar.egg-info/PKG-INFO
 src/project_nightjar.egg-info/SOURCES.txt
 src/project_nightjar.egg-info/dependency_links.txt
@@ -38,5 +47,7 @@ src/project_nightjar.egg-info/requires.txt
 src/project_nightjar.egg-info/top_level.txt
 tests/__pycache__/test_models.cpython-310-pytest-8.4.2.pyc
 tests/__pycache__/test_policy.cpython-310-pytest-8.4.2.pyc
+tests/__pycache__/test_security.cpython-310-pytest-8.4.2.pyc
 tests/test_models.py
 tests/test_policy.py
+tests/test_security.py
