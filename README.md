@@ -70,7 +70,7 @@ python -m pip install --upgrade pip
 pip install -e ".[dev]"
 pytest
 nightjar validate .\missions\example_mission.json
-nightjar run .\missions\example_mission.json --approve
+nightjar run .\missions\example_mission.json --executor dry-run --approval-file .\approval.json --public-key-file .\approver-public.pem
 ```
 
 ## Start on macOS or Linux
@@ -83,7 +83,7 @@ python -m pip install --upgrade pip
 pip install -e ".[dev]"
 pytest
 nightjar validate missions/example_mission.json
-nightjar run missions/example_mission.json --approve
+nightjar run missions/example_mission.json --executor dry-run --approval-file approval.json --public-key-file approver-public.pem
 ```
 
 ## Current behavior
@@ -97,7 +97,7 @@ nightjar run missions/example_mission.json --approve
 - mission termination
 - unsafe or unknown fields
 
-`nightjar run --approve` performs a **dry-run simulation only** and writes an audit record to `logs/`.
+`nightjar run` requires a signed, mission-bound approval envelope. A successfully verified approval is consumed exactly once before execution.
 
 ## Next milestone
 
