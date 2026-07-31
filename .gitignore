@@ -34,3 +34,22 @@ private/
 certificates/
 *.trust.pdf
 *trust*certificate*.pdf
+
+# Runtime authorization state
+*.sqlite
+*.sqlite3
+*.sqlite3-shm
+*.sqlite3-wal
+*.db
+*.db-shm
+*.db-wal
+approval.json
+approvals/
+
+# Additional Python tooling
+.ruff_cache/
+.mypy_cache/
+coverage.xml
+
+# Local private project notes
+notes/private-project-log.md
