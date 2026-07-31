@@ -281,10 +281,10 @@ Completed:
 
 Remaining:
 
-- [ ] Review and strengthen `.gitignore`
-- [ ] Add a license
-- [ ] Add `SECURITY.md`
-- [ ] Add continuous-integration checks
+- [x] Review and strengthen `.gitignore`
+- [x] Add a license
+- [x] Add `SECURITY.md`
+- [x] Add continuous-integration configuration
 - [ ] Perform a clean-clone installation test
 - [ ] Review README claims against implemented behavior
 - [ ] Merge the security-foundation branch
@@ -292,7 +292,7 @@ Remaining:
 
 ## Proposed First Release
 
-`v0.1.0: Secure Simulation Foundation`
+`v0.1.1: Secure Simulation Foundation`
 
 This release would document a simulator-first architecture with deterministic policy enforcement, signed approvals, executor binding, expiration checks, and atomic replay protection.
 

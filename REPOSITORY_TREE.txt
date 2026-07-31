@@ -1,4 +1,5 @@
 .env.example
+.github/workflows/ci.yml
 .gitignore
 .pytest_cache/.gitignore
 .pytest_cache/CACHEDIR.TAG
@@ -11,11 +12,15 @@
 .ruff_cache/0.16.0/15781136807536144870
 .ruff_cache/0.16.0/6437031714903950789
 .ruff_cache/CACHEDIR.TAG
+LICENSE
+NOTICE
 README.md
 REPOSITORY_TREE.txt
+SECURITY.md
 docs/architecture.md
 docs/compliance-checklist.md
 docs/next-session.md
+docs/project-record.md
 docs/safety-policy.md
 docs/threat-model.md
 logs/.gitkeep

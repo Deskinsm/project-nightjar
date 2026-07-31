@@ -1,22 +1,23 @@
 # Project Nightjar
 
-A safety-first natural-language mission controller for simulated and physical drones.
+A safety-first architecture for AI-assisted drone mission planning and execution.
 
-> **Constitution:** The LLM may propose actions. Only deterministic code may authorize and execute them.
+> **Constitution:** An intelligent planner may propose actions. Only deterministic policy and cryptographic human authorization may permit execution.
 
-Nightjar is intentionally split into three layers:
+Nightjar is intentionally divided into four trust layers:
 
-1. **Planner**: converts a user request into a structured mission.
-2. **Policy engine**: deterministically approves or rejects every action.
-3. **Executor**: sends only approved actions to a simulator or flight-control interface.
+1. **Planner**: proposes a structured mission and is treated as untrusted.
+2. **Schema and policy**: validate the mission and enforce deterministic safety limits.
+3. **Authorization**: verifies a mission-bound Ed25519 approval and atomically consumes its nonce.
+4. **Executor**: receives only validated, policy-approved, explicitly authorized missions.
 
-The current starter repository implements the mission model, policy engine, audit logging, CLI, and tests. It does **not** arm or control a real vehicle.
+The current repository supports signed dry-run execution and a separate PX4/MAVSDK simulation smoke test. It does **not** control a physical aircraft.
 
 ## Safety boundary
 
-The LLM must never:
+The planner must never directly:
 
-- call MAVSDK or MAVLink directly
+- call MAVSDK or MAVLink
 - arm a vehicle
 - modify autopilot parameters
 - alter geofences or failsafes
@@ -27,32 +28,15 @@ Human approval remains mandatory before execution.
 
 ## Repository map
 
-```text
-nightjar/
-├── docs/
-│   ├── architecture.md
-│   ├── compliance-checklist.md
-│   ├── safety-policy.md
-│   └── threat-model.md
-├── missions/
-│   ├── example_mission.json
-│   └── rejected_mission.json
-├── src/nightjar/
-│   ├── __init__.py
-│   ├── audit.py
-│   ├── cli.py
-│   ├── executor.py
-│   ├── models.py
-│   ├── planner.py
-│   └── policy.py
-├── tests/
-│   ├── test_models.py
-│   └── test_policy.py
-├── logs/
-├── .env.example
-├── .gitignore
-└── pyproject.toml
-```
+See `REPOSITORY_TREE.txt` for the complete file listing.
+
+Key security components:
+
+- `src/nightjar/security.py`: canonical mission and policy hashing
+- `src/nightjar/approval.py`: Ed25519 approval envelopes
+- `src/nightjar/authorization.py`: verification and one-time consumption
+- `src/nightjar/replay.py`: atomic SQLite replay protection
+- `src/nightjar/cli.py`: fail-closed signed dry-run execution
 
 ## Requirements
 
@@ -70,7 +54,6 @@ python -m pip install --upgrade pip
 pip install -e ".[dev]"
 pytest
 nightjar validate .\missions\example_mission.json
-nightjar run .\missions\example_mission.json --executor dry-run --approval-file .\approval.json --public-key-file .\approver-public.pem
 ```
 
 ## Start on macOS or Linux
@@ -83,25 +66,21 @@ python -m pip install --upgrade pip
 pip install -e ".[dev]"
 pytest
 nightjar validate missions/example_mission.json
-nightjar run missions/example_mission.json --executor dry-run --approval-file approval.json --public-key-file approver-public.pem
 ```
 
 ## Current behavior
 
-`nightjar validate` checks:
+`nightjar validate` checks mission structure, supported actions, policy limits, state transitions, mission termination, and unknown fields.
 
-- mission structure
-- approved action types
-- altitude, distance, and duration limits
-- state transitions
-- mission termination
-- unsafe or unknown fields
+`nightjar run` requires a signed, mission-bound approval envelope. The approval binds the mission hash, policy hash, executor, validity window, and nonce. A successfully verified approval is consumed exactly once before dry-run execution.
 
-`nightjar run` requires a signed, mission-bound approval envelope. A successfully verified approval is consumed exactly once before execution.
+The repository does not include a private signing key or reusable approval envelope. Tests generate ephemeral Ed25519 keys in temporary directories.
+
+See `docs/project-record.md` for the full architecture, verified milestones, and known limitations.
 
 ## Next milestone
 
-Replace `DryRunExecutor` with a `MavsdkExecutor` that connects to PX4 Software-in-the-Loop. Keep the policy boundary unchanged.
+Add aggregate mission budgets so individually permitted actions cannot combine into an excessive total mission.
 
 ## Personal records
 
