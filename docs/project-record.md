@@ -285,8 +285,8 @@ Remaining:
 - [x] Add a license
 - [x] Add `SECURITY.md`
 - [x] Add continuous-integration configuration
-- [ ] Perform a clean-clone installation test
-- [ ] Review README claims against implemented behavior
+- [x] Perform a clean-clone installation test
+- [x] Review README claims against implemented behavior
 - [ ] Merge the security-foundation branch
 - [ ] Tag the first public release
 
