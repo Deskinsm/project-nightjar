@@ -171,11 +171,11 @@ A live CLI test demonstrated:
 
 Current branch:
 
-`feature/security-foundation`
+`main`
 
-Latest milestone commit:
+Latest verified implementation checkpoint:
 
-`ff8cbc4 Enforce signed approvals in CLI`
+`d2ef6c3 Record clean-room installation verification`
 
 Current automated test count:
 
@@ -183,7 +183,7 @@ Current automated test count:
 
 Primary milestone commits:
 
-- `ff8cbc4 Enforce signed approvals in CLI`
+- `d2ef6c3 Record clean-room installation verification`
 - `391e5d7 Add one-time signed approval enforcement`
 - `29637e8 Add signed approval envelope verification`
 - `1dfa2a7 Bind MAVSDK smoke test to loopback`
@@ -274,7 +274,7 @@ Completed:
 - [x] No committed private or serialized signing keys found
 - [x] No committed nonce databases or generated audit logs found
 - [x] Infrastructure identifiers reviewed
-- [x] No Git remote currently configured
+- [x] Git remote absence verified before publication
 - [x] Test suite passing
 - [x] Ruff linting passing
 - [x] Formatting checks passing
@@ -287,7 +287,7 @@ Remaining:
 - [x] Add continuous-integration configuration
 - [x] Perform a clean-clone installation test
 - [x] Review README claims against implemented behavior
-- [ ] Merge the security-foundation branch
+- [x] Merge the security-foundation branch
 - [ ] Tag the first public release
 
 ## Proposed First Release
