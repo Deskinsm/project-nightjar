@@ -1,5 +1,7 @@
 # Project Nightjar
 
+[![CI](https://github.com/Deskinsm/project-nightjar/actions/workflows/ci.yml/badge.svg)](https://github.com/Deskinsm/project-nightjar/actions/workflows/ci.yml)
+
 A safety-first architecture for AI-assisted drone mission planning and execution.
 
 > **Constitution:** An intelligent planner may propose actions. Only deterministic policy and cryptographic human authorization may permit execution.
@@ -47,7 +49,8 @@ Key security components:
 ## Start on Windows PowerShell
 
 ```powershell
-cd nightjar
+git clone https://github.com/Deskinsm/project-nightjar.git
+cd project-nightjar
 py -3.10 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
@@ -59,7 +62,8 @@ nightjar validate .\missions\example_mission.json
 ## Start on macOS or Linux
 
 ```bash
-cd nightjar
+git clone https://github.com/Deskinsm/project-nightjar.git
+cd project-nightjar
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
