@@ -30,7 +30,6 @@ Human approval remains mandatory before execution.
 
 ## Repository map
 
-See `REPOSITORY_TREE.txt` for the complete file listing.
 
 Key security components:
 
