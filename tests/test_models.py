@@ -32,3 +32,30 @@ def test_unknown_fields_are_rejected() -> None:
                 ],
             }
         )
+
+
+@pytest.mark.parametrize(
+    "bad_value",
+    [
+        float("nan"),
+        float("inf"),
+        float("-inf"),
+    ],
+)
+def test_non_finite_coordinates_are_rejected(bad_value: float) -> None:
+    with pytest.raises(ValidationError):
+        Mission.model_validate(
+            {
+                "description": "Non-finite coordinate test",
+                "actions": [
+                    {"type": "takeoff", "altitude_m": 5},
+                    {
+                        "type": "goto",
+                        "north_m": bad_value,
+                        "east_m": 0,
+                        "altitude_m": 5,
+                    },
+                    {"type": "land"},
+                ],
+            }
+        )
