@@ -27,6 +27,10 @@ class PolicyLimits:
     max_hold_seconds: int = 60
     max_mission_actions: int = 10
 
+    max_total_hold_seconds: int = 120
+    max_total_horizontal_distance_m: float = 120.0
+    max_goto_actions: int = 5
+
 
 @dataclass(frozen=True)
 class PolicyDecision:
@@ -41,6 +45,12 @@ class PolicyEngine:
     def evaluate(self, mission: Mission) -> PolicyDecision:
         reasons: list[str] = []
         state = FlightState.DISARMED
+        total_hold_seconds = 0
+        total_horizontal_distance_m = 0.0
+        goto_actions = 0
+
+        current_north_m = 0.0
+        current_east_m = 0.0
 
         if len(mission.actions) > self.limits.max_mission_actions:
             reasons.append(
@@ -69,6 +79,7 @@ class PolicyEngine:
                         f"{prefix}: duration {action.duration_seconds} s exceeds "
                         f"{self.limits.max_hold_seconds} s."
                     )
+                total_hold_seconds += action.duration_seconds
 
             elif isinstance(action, GotoAction):
                 if state is not FlightState.AIRBORNE:
@@ -84,10 +95,28 @@ class PolicyEngine:
                         f"{prefix}: distance {distance:.1f} m exceeds "
                         f"{self.limits.max_distance_from_home_m} m."
                     )
+                goto_actions += 1
+
+                leg_distance = hypot(
+                    action.north_m - current_north_m,
+                    action.east_m - current_east_m,
+                )
+                total_horizontal_distance_m += leg_distance
+
+                current_north_m = action.north_m
+                current_east_m = action.east_m
 
             elif action.type is ActionType.RETURN_HOME:
                 if state is not FlightState.AIRBORNE:
                     reasons.append(f"{prefix}: return_home requires airborne state.")
+
+                total_horizontal_distance_m += hypot(
+                    current_north_m,
+                    current_east_m,
+                )
+                current_north_m = 0.0
+                current_east_m = 0.0
+
                 state = FlightState.RETURNING
 
             elif action.type is ActionType.LAND:
@@ -108,6 +137,23 @@ class PolicyEngine:
                             f"{prefix}: only land may follow return_home; found {next_types}."
                         )
 
+                if total_hold_seconds > self.limits.max_total_hold_seconds:
+                    reasons.append(
+                        f"Mission total hold time {total_hold_seconds} s exceeds "
+                        f"{self.limits.max_total_hold_seconds} s."
+                    )
+
+                if total_horizontal_distance_m > self.limits.max_total_horizontal_distance_m:
+                    reasons.append(
+                        f"Mission total horizontal distance {total_horizontal_distance_m:.1f} m exceeds "
+                        f"{self.limits.max_total_horizontal_distance_m} m."
+                    )
+
+                if goto_actions > self.limits.max_goto_actions:
+                    reasons.append(
+                        f"Mission has {goto_actions} goto actions; "
+                        f"maximum is {self.limits.max_goto_actions}."
+                    )
         if mission.actions[0].type is not ActionType.TAKEOFF:
             reasons.append("The first action must be takeoff.")
 
