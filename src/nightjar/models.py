@@ -10,7 +10,11 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 class StrictModel(BaseModel):
     """Reject fields that are not part of the approved mission schema."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        allow_inf_nan=False,
+    )
 
 
 class ActionType(str, Enum):

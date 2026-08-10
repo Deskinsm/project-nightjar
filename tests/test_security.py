@@ -1,3 +1,5 @@
+import pytest
+
 from nightjar.models import Mission
 from nightjar.policy import PolicyLimits
 from nightjar.security import (
@@ -53,3 +55,8 @@ def test_policy_change_changes_hash() -> None:
     altered = PolicyLimits(max_altitude_m=20)
 
     assert policy_sha256(original) != policy_sha256(altered)
+
+
+def test_canonical_json_rejects_non_finite_numbers() -> None:
+    with pytest.raises(ValueError):
+        canonical_json_bytes({"distance_m": float("nan")})

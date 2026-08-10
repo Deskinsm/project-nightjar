@@ -17,6 +17,7 @@ def canonical_json_bytes(value: Any) -> bytes:
         sort_keys=True,
         separators=(",", ":"),
         ensure_ascii=False,
+        allow_nan=False,
     )
     return serialized.encode("utf-8")
 
