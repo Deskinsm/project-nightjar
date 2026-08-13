@@ -19,6 +19,10 @@ dev = [
     "ruff>=0.5,<1",
 ]
 
+flight = [
+    "mavsdk==3.17.2",
+]
+
 [project.scripts]
 nightjar = "nightjar.cli:main"
 
