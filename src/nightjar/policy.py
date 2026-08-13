@@ -137,24 +137,28 @@ class PolicyEngine:
                             f"{prefix}: only land may follow return_home; found {next_types}."
                         )
 
-                if total_hold_seconds > self.limits.max_total_hold_seconds:
-                    reasons.append(
-                        f"Mission total hold time {total_hold_seconds} s exceeds "
-                        f"{self.limits.max_total_hold_seconds} s."
-                    )
+        if total_hold_seconds > self.limits.max_total_hold_seconds:
+            reasons.append(
+                f"Mission total hold time {total_hold_seconds} s exceeds "
+                f"{self.limits.max_total_hold_seconds} s."
+            )
 
-                if total_horizontal_distance_m > self.limits.max_total_horizontal_distance_m:
-                    reasons.append(
-                        f"Mission total horizontal distance {total_horizontal_distance_m:.1f} m exceeds "
-                        f"{self.limits.max_total_horizontal_distance_m} m."
-                    )
+        if total_horizontal_distance_m > self.limits.max_total_horizontal_distance_m:
+            reasons.append(
+                f"Mission total horizontal distance {total_horizontal_distance_m:.1f} m exceeds "
+                f"{self.limits.max_total_horizontal_distance_m} m."
+            )
 
-                if goto_actions > self.limits.max_goto_actions:
-                    reasons.append(
-                        f"Mission has {goto_actions} goto actions; "
-                        f"maximum is {self.limits.max_goto_actions}."
-                    )
+        if goto_actions > self.limits.max_goto_actions:
+            reasons.append(
+                f"Mission has {goto_actions} goto actions; "
+                f"maximum is {self.limits.max_goto_actions}."
+            )
+
         if mission.actions[0].type is not ActionType.TAKEOFF:
             reasons.append("The first action must be takeoff.")
 
-        return PolicyDecision(approved=not reasons, reasons=tuple(dict.fromkeys(reasons)))
+        return PolicyDecision(
+            approved=not reasons,
+            reasons=tuple(dict.fromkeys(reasons)),
+        )

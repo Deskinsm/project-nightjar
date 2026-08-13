@@ -137,3 +137,22 @@ def test_return_home_leg_counts_toward_distance_budget() -> None:
 
     assert decision.approved is False
     assert any("total horizontal distance" in reason for reason in decision.reasons)
+
+
+def test_only_land_may_follow_return_home() -> None:
+    mission = Mission.model_validate(
+        {
+            "description": "Invalid action after return home",
+            "actions": [
+                {"type": "takeoff", "altitude_m": 5},
+                {"type": "return_home"},
+                {"type": "goto", "north_m": 1, "east_m": 0, "altitude_m": 5},
+                {"type": "land"},
+            ],
+        }
+    )
+
+    decision = PolicyEngine().evaluate(mission)
+
+    assert decision.approved is False
+    assert any("only land may follow return_home" in reason for reason in decision.reasons)
