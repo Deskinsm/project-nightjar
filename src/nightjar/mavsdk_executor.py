@@ -1,0 +1,181 @@
+from __future__ import annotations
+
+import asyncio
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+from nightjar.audit import write_audit_record
+from nightjar.executor import ExecutionResult
+from nightjar.models import HoldAction, LandAction, Mission, TakeoffAction
+from nightjar.policy import PolicyEngine, PolicyLimits
+
+
+class MavsdkExecutorError(RuntimeError):
+    """Base error for MAVSDK execution failures."""
+
+
+class MavsdkPolicyRejectedError(MavsdkExecutorError):
+    """Raised when a mission fails deterministic Nightjar policy."""
+
+
+class UnsupportedMavsdkActionError(MavsdkExecutorError):
+    """Raised when a mission contains actions this executor cannot safely translate."""
+
+
+def _default_system_factory() -> Any:
+    try:
+        from mavsdk import System
+    except ImportError as exc:
+        raise MavsdkExecutorError(
+            'MAVSDK flight support is not installed. Install Nightjar with the "flight" extra.'
+        ) from exc
+
+    return System()
+
+
+@dataclass(frozen=True)
+class MavsdkExecutor:
+    """Execute a restricted Nightjar mission against MAVSDK/PX4."""
+
+    system_address: str = "udpin://127.0.0.1:14540"
+    connection_timeout_seconds: float = 20.0
+    landing_timeout_seconds: float = 30.0
+    log_directory: Path | None = None
+    limits: PolicyLimits = field(default_factory=PolicyLimits)
+    system_factory: Callable[[], Any] = _default_system_factory
+    sleep_function: Callable[[float], Awaitable[None]] = asyncio.sleep
+
+    def validate_mission(self, mission: Mission) -> None:
+        decision = PolicyEngine(self.limits).evaluate(mission)
+
+        if not decision.approved:
+            reasons = "; ".join(decision.reasons)
+            raise MavsdkPolicyRejectedError(f"Mission rejected by policy: {reasons}")
+
+        unsupported = [
+            action.type.value
+            for action in mission.actions
+            if not isinstance(action, (TakeoffAction, HoldAction, LandAction))
+        ]
+
+        if unsupported:
+            action_names = ", ".join(dict.fromkeys(unsupported))
+            raise UnsupportedMavsdkActionError(
+                f"MAVSDK executor does not support these mission actions yet: {action_names}."
+            )
+
+    def execute(self, mission: Mission) -> ExecutionResult:
+        self.validate_mission(mission)
+        return asyncio.run(self._execute(mission))
+
+    async def _execute(self, mission: Mission) -> ExecutionResult:
+        drone = self.system_factory()
+
+        log_path = write_audit_record(
+            mission_id=mission.mission_id,
+            event="mission_started",
+            details={
+                "description": mission.description,
+                "executor": "mavsdk",
+                "system_address": self.system_address,
+            },
+            log_directory=self.log_directory,
+        )
+
+        try:
+            await drone.connect(system_address=self.system_address)
+            await self._wait_for_connection(drone)
+
+            for sequence, action in enumerate(mission.actions, start=1):
+                write_audit_record(
+                    mission_id=mission.mission_id,
+                    event="action_started",
+                    details={
+                        "sequence": sequence,
+                        "action": action.model_dump(mode="json"),
+                        "executor": "mavsdk",
+                    },
+                    log_directory=self.log_directory,
+                )
+
+                if isinstance(action, TakeoffAction):
+                    await drone.action.set_takeoff_altitude(action.altitude_m)
+                    await drone.action.arm()
+                    await drone.action.takeoff()
+
+                elif isinstance(action, HoldAction):
+                    await self.sleep_function(action.duration_seconds)
+
+                elif isinstance(action, LandAction):
+                    await drone.action.land()
+                    await self._wait_until_landed(drone)
+
+                write_audit_record(
+                    mission_id=mission.mission_id,
+                    event="action_completed",
+                    details={
+                        "sequence": sequence,
+                        "action_type": action.type.value,
+                        "executor": "mavsdk",
+                    },
+                    log_directory=self.log_directory,
+                )
+
+        except Exception as exc:
+            write_audit_record(
+                mission_id=mission.mission_id,
+                event="mission_failed",
+                details={
+                    "executor": "mavsdk",
+                    "error": str(exc),
+                },
+                log_directory=self.log_directory,
+            )
+            raise
+
+        write_audit_record(
+            mission_id=mission.mission_id,
+            event="mission_completed",
+            details={"executor": "mavsdk"},
+            log_directory=self.log_directory,
+        )
+
+        return ExecutionResult(completed=True, log_path=log_path)
+
+    async def _wait_for_connection(self, drone: Any) -> None:
+        async def wait() -> None:
+            async for state in drone.core.connection_state():
+                if state.is_connected:
+                    return
+
+            raise MavsdkExecutorError("MAVSDK connection-state stream ended before PX4 connected.")
+
+        try:
+            await asyncio.wait_for(
+                wait(),
+                timeout=self.connection_timeout_seconds,
+            )
+        except asyncio.TimeoutError as exc:
+            raise MavsdkExecutorError(
+                f"Timed out waiting {self.connection_timeout_seconds:g} seconds for PX4."
+            ) from exc
+
+    async def _wait_until_landed(self, drone: Any) -> None:
+        async def wait() -> None:
+            async for is_in_air in drone.telemetry.in_air():
+                if not is_in_air:
+                    return
+
+            raise MavsdkExecutorError("MAVSDK in-air telemetry ended before landing was confirmed.")
+
+        try:
+            await asyncio.wait_for(
+                wait(),
+                timeout=self.landing_timeout_seconds,
+            )
+        except asyncio.TimeoutError as exc:
+            raise MavsdkExecutorError(
+                f"Timed out waiting {self.landing_timeout_seconds:g} seconds for landing."
+            ) from exc
