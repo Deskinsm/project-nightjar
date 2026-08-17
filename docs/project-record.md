@@ -73,9 +73,12 @@ Current policy controls include:
 
 - Maximum altitude
 - Maximum distance from home
-- Maximum hold duration
-- Maximum action count
-- Valid action ordering
+- Maximum per-action hold duration
+- Maximum mission action count
+- Maximum aggregate hold time
+- Maximum aggregate horizontal travel
+- Maximum total `goto` actions
+- Valid action ordering and termination
 
 A rejected policy decision prevents execution.
 
@@ -114,9 +117,23 @@ Approval nonces are stored in SQLite using a unique primary-key constraint.
 
 The database insertion acts as an atomic replay check. An approval can succeed once and is rejected on subsequent attempts by processes sharing the same nonce database.
 
-### Loopback-Only MAVSDK Connection
+### Restricted MAVSDK Executor
 
-The MAVSDK smoke test connects through 127.0.0.1 rather than listening on every network interface.
+Nightjar includes a restricted MAVSDK/PX4 simulation executor.
+
+The executor:
+
+- connects only through the configured MAVSDK endpoint
+- runs deterministic Nightjar policy before MAVSDK system creation
+- currently supports only takeoff, hold, and land
+- rejects `goto` and `return_home` before connecting to PX4
+- waits for relative-altitude telemetry before completing takeoff
+- waits for landing telemetry before completing land
+- records action and mission lifecycle events in the audit log
+
+The default simulation endpoint uses `127.0.0.1`.
+
+The MAVSDK executor is intentionally not yet connected to the signed CLI authorization path.
 
 ## Verified Milestones
 
@@ -136,16 +153,20 @@ Manual simulator commands successfully:
 - Landed
 - Disarmed
 
-### Python MAVSDK Flight
+### Restricted MAVSDK PX4 Simulation
 
-A Python MAVSDK smoke test successfully:
+The Nightjar MAVSDK executor successfully:
 
 - Connected to PX4
-- Armed
-- Took off
-- Held for ten seconds
-- Landed
-- Confirmed landing
+- Armed the simulated vehicle
+- Requested a 5 m takeoff
+- Waited for relative-altitude telemetry before completing takeoff
+- Began a ten-second hold only after the takeoff threshold was reached
+- Issued landing
+- Waited for landing confirmation
+- Completed the audited mission lifecycle
+
+A regression test also verifies that a takeoff which never reaches the required altitude times out, blocks subsequent actions, and records mission failure.
 
 ### Cryptographic Authorization
 
@@ -175,20 +196,29 @@ Current branch:
 
 Latest verified implementation checkpoint:
 
-`d2ef6c3 Record clean-room installation verification`
+`0a5b161 Confirm takeoff altitude before continuing`
 
 Current automated test count:
 
-`24 passing tests`
+`41 passing tests`
+
+Latest validation:
+
+- Windows / Python 3.11: 41 passing tests
+- Linux / Python 3.10: 41 passing tests
+- Ruff checks passing
+- PX4 SIH simulation completed successfully with telemetry-confirmed takeoff and landing
 
 Primary milestone commits:
 
-- `d2ef6c3 Record clean-room installation verification`
+- `0a5b161 Confirm takeoff altitude before continuing`
+- `1b6f8c1 Add restricted MAVSDK executor`
+- `71aad27 Add optional MAVSDK flight dependency`
+- `229a7e2 Evaluate aggregate budgets after mission actions`
+- `568e423 Enforce aggregate mission budgets`
 - `391e5d7 Add one-time signed approval enforcement`
 - `29637e8 Add signed approval envelope verification`
-- `1dfa2a7 Bind MAVSDK smoke test to loopback`
 - `7feebb2 Add canonical mission and policy hashing`
-- `2df21c0 Complete PX4 MAVSDK smoke flight`
 
 ## Security Decisions
 
@@ -227,29 +257,36 @@ Execution may begin only after the signed approval has been verified and atomica
 - The nonce database is not replicated across executor hosts.
 - Audit records are append-only JSONL but are not cryptographically chained or externally anchored.
 - Audit-log availability is not yet separated from recovery behavior.
-- Aggregate mission budgets have not yet been implemented.
-- Individually safe actions could combine into an excessive total mission.
 - The primary CLI currently authorizes only the dry-run executor.
-- The MAVSDK smoke test is separate from the signed CLI execution path.
 - No production key-management or key-rotation process exists.
 - Testing has used PX4 software simulation.
 - No hardware-in-the-loop testing has occurred.
 - No physical aircraft has been controlled by Nightjar.
 - The architecture does not protect against a fully compromised executor operating system.
+- The restricted MAVSDK executor is not yet connected to the signed CLI authorization path.
+- `goto` and `return_home` are intentionally unsupported by the MAVSDK executor until their coordinate and behavioral semantics are defined.
+- Takeoff and landing state confirmation have been tested only in PX4 software simulation.
 
 ## Development Roadmap
 
 Near-term work:
 
-1. Add aggregate mission budgets.
-2. Separate structural schema limits from operational policy limits.
-3. Define recovery behavior independent of audit writes.
-4. Introduce an audit-sink abstraction.
-5. Add chained audit records and external anchoring.
-6. Implement a policy-controlled MAVSDK executor.
-7. Connect signed approvals to simulated MAVSDK execution.
+1. Connect signed approvals to the restricted MAVSDK executor in PX4 simulation.
+2. Ensure the exact authorized `PolicyLimits` instance governs MAVSDK execution.
+3. Define executor abort and recovery behavior for failures after arming.
+4. Separate structural schema limits from operational policy limits.
+5. Define recovery behavior independent of audit writes.
+6. Introduce an audit-sink abstraction.
+7. Add chained audit records and external anchoring.
 8. Define signing-key custody and rotation.
 9. Add hardware-in-the-loop testing.
+
+Completed roadmap milestones:
+
+- Aggregate mission budgets
+- Non-finite mission-value rejection
+- Policy-controlled restricted MAVSDK executor
+- Telemetry-confirmed takeoff and landing in PX4 simulation
 
 Potential later work:
 
@@ -288,12 +325,14 @@ Remaining:
 - [x] Perform a clean-clone installation test
 - [x] Review README claims against implemented behavior
 - [x] Merge the security-foundation branch
-- [ ] Tag the first public release
+- [x] Tag and publish the first public release (`v0.1.1`)
 
-## Proposed First Release
+## Current Public Release
 
 `v0.1.1: Secure Simulation Foundation`
 
-This release would document a simulator-first architecture with deterministic policy enforcement, signed approvals, executor binding, expiration checks, and atomic replay protection.
+The first public release established the simulator-first security foundation with deterministic policy enforcement, signed approvals, executor binding, expiration checks, and atomic replay protection.
 
-It would not claim production readiness, physical-flight validation, or complete protection against host compromise.
+Development on `main` has advanced beyond that release and now also includes aggregate mission budgets and the restricted MAVSDK/PX4 executor.
+
+The project still does not claim production readiness, hardware-in-the-loop validation, physical-flight validation, or protection against a fully compromised executor host.
