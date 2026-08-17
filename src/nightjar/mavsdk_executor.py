@@ -41,6 +41,8 @@ class MavsdkExecutor:
 
     system_address: str = "udpin://127.0.0.1:14540"
     connection_timeout_seconds: float = 20.0
+    takeoff_timeout_seconds: float = 30.0
+    takeoff_altitude_tolerance_m: float = 0.5
     landing_timeout_seconds: float = 30.0
     log_directory: Path | None = None
     limits: PolicyLimits = field(default_factory=PolicyLimits)
@@ -104,6 +106,10 @@ class MavsdkExecutor:
                     await drone.action.set_takeoff_altitude(action.altitude_m)
                     await drone.action.arm()
                     await drone.action.takeoff()
+                    await self._wait_until_takeoff_altitude(
+                        drone,
+                        target_altitude_m=action.altitude_m,
+                    )
 
                 elif isinstance(action, HoldAction):
                     await self.sleep_function(action.duration_seconds)
@@ -160,6 +166,36 @@ class MavsdkExecutor:
         except asyncio.TimeoutError as exc:
             raise MavsdkExecutorError(
                 f"Timed out waiting {self.connection_timeout_seconds:g} seconds for PX4."
+            ) from exc
+
+    async def _wait_until_takeoff_altitude(
+        self,
+        drone: Any,
+        target_altitude_m: float,
+    ) -> None:
+        minimum_altitude_m = max(
+            target_altitude_m * 0.9,
+            target_altitude_m - self.takeoff_altitude_tolerance_m,
+        )
+
+        async def wait() -> None:
+            async for position in drone.telemetry.position():
+                if position.relative_altitude_m >= minimum_altitude_m:
+                    return
+
+            raise MavsdkExecutorError(
+                "MAVSDK position telemetry ended before takeoff altitude was reached."
+            )
+
+        try:
+            await asyncio.wait_for(
+                wait(),
+                timeout=self.takeoff_timeout_seconds,
+            )
+        except asyncio.TimeoutError as exc:
+            raise MavsdkExecutorError(
+                f"Timed out waiting {self.takeoff_timeout_seconds:g} seconds "
+                f"to reach takeoff altitude {target_altitude_m:g} m."
             ) from exc
 
     async def _wait_until_landed(self, drone: Any) -> None:
