@@ -6,10 +6,17 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+
+from nightjar.approval import SignedApproval
 from nightjar.audit import write_audit_record
+from nightjar.authorization import verify_and_consume_approval
 from nightjar.executor import ExecutionResult
 from nightjar.models import HoldAction, LandAction, Mission, TakeoffAction
 from nightjar.policy import PolicyEngine, PolicyLimits
+from nightjar.replay import NonceStore
+
+MAVSDK_EXECUTOR_NAME = "mavsdk"
 
 
 class MavsdkExecutorError(RuntimeError):
@@ -37,8 +44,10 @@ def _default_system_factory() -> Any:
 
 @dataclass(frozen=True)
 class MavsdkExecutor:
-    """Execute a restricted Nightjar mission against MAVSDK/PX4."""
+    """Authorize and execute restricted Nightjar missions against MAVSDK/PX4."""
 
+    public_key: Ed25519PublicKey
+    nonce_store: NonceStore
     system_address: str = "udpin://127.0.0.1:14540"
     connection_timeout_seconds: float = 20.0
     takeoff_timeout_seconds: float = 30.0
@@ -68,8 +77,29 @@ class MavsdkExecutor:
                 f"MAVSDK executor does not support these mission actions yet: {action_names}."
             )
 
-    def execute(self, mission: Mission) -> ExecutionResult:
+    def execute(
+        self,
+        mission: Mission,
+        *,
+        approval: SignedApproval,
+    ) -> ExecutionResult:
+        """Authorize and execute a restricted MAVSDK mission.
+
+        Mission capability and deterministic policy checks occur before approval
+        consumption. MAVSDK system creation occurs only after the signed approval
+        has been verified and its nonce atomically consumed.
+        """
         self.validate_mission(mission)
+
+        verify_and_consume_approval(
+            envelope=approval,
+            public_key=self.public_key,
+            mission=mission,
+            limits=self.limits,
+            expected_executor=MAVSDK_EXECUTOR_NAME,
+            nonce_store=self.nonce_store,
+        )
+
         return asyncio.run(self._execute(mission))
 
     async def _execute(self, mission: Mission) -> ExecutionResult:
@@ -80,7 +110,7 @@ class MavsdkExecutor:
             event="mission_started",
             details={
                 "description": mission.description,
-                "executor": "mavsdk",
+                "executor": MAVSDK_EXECUTOR_NAME,
                 "system_address": self.system_address,
             },
             log_directory=self.log_directory,
@@ -97,7 +127,7 @@ class MavsdkExecutor:
                     details={
                         "sequence": sequence,
                         "action": action.model_dump(mode="json"),
-                        "executor": "mavsdk",
+                        "executor": MAVSDK_EXECUTOR_NAME,
                     },
                     log_directory=self.log_directory,
                 )
@@ -124,7 +154,7 @@ class MavsdkExecutor:
                     details={
                         "sequence": sequence,
                         "action_type": action.type.value,
-                        "executor": "mavsdk",
+                        "executor": MAVSDK_EXECUTOR_NAME,
                     },
                     log_directory=self.log_directory,
                 )
@@ -134,7 +164,7 @@ class MavsdkExecutor:
                 mission_id=mission.mission_id,
                 event="mission_failed",
                 details={
-                    "executor": "mavsdk",
+                    "executor": MAVSDK_EXECUTOR_NAME,
                     "error": str(exc),
                 },
                 log_directory=self.log_directory,
@@ -144,7 +174,7 @@ class MavsdkExecutor:
         write_audit_record(
             mission_id=mission.mission_id,
             event="mission_completed",
-            details={"executor": "mavsdk"},
+            details={"executor": MAVSDK_EXECUTOR_NAME},
             log_directory=self.log_directory,
         )
 
