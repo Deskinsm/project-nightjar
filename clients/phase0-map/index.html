@@ -1,0 +1,504 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Nightjar Phase 0 — Mission Validation Probe</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+  :root {
+    --paper:      #E7EDE8;
+    --paper-deep: #DBE3DC;
+    --ink:        #17211C;
+    --ink-soft:   #55645C;
+    --rule:       #A3B2A8;
+    --magenta:    #A81E63;
+    --airspace:   #1F5C8B;
+    --buff:       #D8C6A0;
+
+    --display: ui-sans-serif, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+    --data: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--data);
+    font-size: 13px;
+    line-height: 1.5;
+  }
+
+  /* ---- Signature: the trust boundary, rendered ---- */
+
+  .boundary {
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
+    border-bottom: 2px solid var(--ink);
+    background: var(--paper-deep);
+  }
+
+  .zone { padding: 10px 16px; position: relative; }
+
+  .zone--client {
+    background:
+      repeating-linear-gradient(135deg,
+        transparent 0 9px, rgba(168, 30, 99, .07) 9px 18px),
+      var(--buff);
+  }
+
+  .zone--nightjar { text-align: right; }
+
+  .zone__label {
+    font-family: var(--display);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: .18em;
+    text-transform: uppercase;
+    color: var(--ink-soft);
+  }
+
+  .zone__body { font-size: 12px; margin-top: 2px; }
+
+  .zone__stamp {
+    display: inline-block;
+    margin-top: 4px;
+    padding: 1px 6px;
+    border: 1.5px solid var(--magenta);
+    color: var(--magenta);
+    font-family: var(--display);
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    transform: rotate(-1.5deg);
+  }
+
+  .wire {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 0 14px;
+    border-left: 1px solid var(--rule);
+    border-right: 1px solid var(--rule);
+    font-family: var(--display);
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: .16em;
+    color: var(--ink-soft);
+  }
+
+  .wire__dot {
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    background: var(--rule);
+    transition: background .18s ease;
+  }
+
+  .wire[data-state="sending"] .wire__dot { background: var(--magenta); }
+  .wire[data-state="done"] .wire__dot { background: var(--airspace); }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .wire[data-state="sending"] .wire__dot { animation: pulse .7s ease-in-out infinite; }
+  }
+  @keyframes pulse { 50% { opacity: .25; } }
+
+  /* ---- Layout ---- */
+
+  .shell { display: grid; grid-template-columns: 1fr 400px; height: calc(100vh - 62px); }
+  #map { height: 100%; background: var(--paper-deep); }
+
+  .panel {
+    border-left: 2px solid var(--ink);
+    overflow-y: auto;
+    background: var(--paper);
+  }
+
+  .block { padding: 14px 16px; border-bottom: 1px solid var(--rule); }
+
+  h2 {
+    font-family: var(--display);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: .18em;
+    text-transform: uppercase;
+    color: var(--ink-soft);
+    margin: 0 0 8px;
+  }
+
+  .hint { color: var(--ink-soft); font-size: 12px; }
+
+  .row { display: flex; justify-content: space-between; gap: 12px; padding: 2px 0; }
+  .row span:last-child { font-variant-numeric: tabular-nums; }
+  .row--pending span:last-child { color: var(--ink-soft); }
+
+  button {
+    font-family: var(--display);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    padding: 9px 14px;
+    border: 1.5px solid var(--ink);
+    background: var(--paper);
+    color: var(--ink);
+    cursor: pointer;
+  }
+  button:hover:not(:disabled) { background: var(--ink); color: var(--paper); }
+  button:disabled { opacity: .35; cursor: not-allowed; }
+  button:focus-visible { outline: 3px solid var(--magenta); outline-offset: 2px; }
+
+  .controls { display: flex; gap: 8px; flex-wrap: wrap; }
+
+  label { display: block; margin-bottom: 10px; }
+  label span { display: block; margin-bottom: 3px; color: var(--ink-soft); }
+  input[type=range] { width: 100%; accent-color: var(--airspace); }
+  input[type=number] {
+    width: 100%; padding: 6px 8px; font-family: var(--data); font-size: 13px;
+    border: 1px solid var(--rule); background: #fff; color: var(--ink);
+  }
+
+  /* ---- Verdict ---- */
+
+  .verdict { border-left: 5px solid var(--rule); padding-left: 11px; }
+  .verdict--approved { border-left-color: var(--airspace); }
+  .verdict--rejected { border-left-color: var(--magenta); }
+
+  .verdict__head {
+    font-family: var(--display);
+    font-size: 17px;
+    font-weight: 800;
+    letter-spacing: .06em;
+    text-transform: uppercase;
+  }
+  .verdict--approved .verdict__head { color: var(--airspace); }
+  .verdict--rejected .verdict__head { color: var(--magenta); }
+
+  .reasons { margin: 8px 0 0; padding-left: 16px; }
+  .reasons li { margin-bottom: 5px; color: var(--magenta); }
+
+  .stamp-auth {
+    margin-top: 12px;
+    padding: 7px 10px;
+    border: 2px solid var(--magenta);
+    color: var(--magenta);
+    font-family: var(--display);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    text-align: center;
+  }
+
+  .hash { word-break: break-all; font-size: 11px; color: var(--ink-soft); }
+
+  .legend-swatch {
+    display: inline-block; width: 22px; height: 0;
+    vertical-align: middle; margin-right: 7px;
+  }
+
+  @media (max-width: 860px) {
+    .shell { grid-template-columns: 1fr; height: auto; }
+    #map { height: 55vh; }
+    .panel { border-left: none; border-top: 2px solid var(--ink); }
+    .boundary { grid-template-columns: 1fr; }
+    .wire { border: none; border-top: 1px solid var(--rule); padding: 6px 16px; }
+    .zone--nightjar { text-align: left; }
+  }
+</style>
+</head>
+<body>
+
+<header class="boundary">
+  <div class="zone zone--client">
+    <div class="zone__label">Client — untrusted</div>
+    <div class="zone__body">WGS84 map point → local NED</div>
+    <div class="zone__stamp">Experimental conversion · not a safety boundary</div>
+  </div>
+  <div class="wire" id="wire" data-state="idle">
+    <span class="wire__dot"></span>
+    <span id="wire-label">Idle</span>
+  </div>
+  <div class="zone zone--nightjar">
+    <div class="zone__label">Nightjar — read only</div>
+    <div class="zone__body">Schema · policy · hashing</div>
+    <div class="zone__body" style="color:var(--ink-soft)">No key · no executor</div>
+  </div>
+</header>
+
+<div class="shell">
+  <div id="map"></div>
+
+  <div class="panel">
+    <div class="block">
+      <h2>Points</h2>
+      <div class="row row--pending" id="row-home"><span>Home</span><span>Click map</span></div>
+      <div class="row row--pending" id="row-dest"><span>Destination</span><span>—</span></div>
+      <div class="row row--pending" id="row-ned"><span>Converted NED</span><span>—</span></div>
+      <p class="hint" id="stage-hint">First click sets home. Second sets the destination.</p>
+    </div>
+
+    <div class="block">
+      <h2>Mission</h2>
+      <label>
+        <span>Altitude (m)</span>
+        <input type="range" id="alt" min="1" max="15" step="0.5" value="5">
+      </label>
+      <div class="row"><span>takeoff → goto → return_home → land</span><span id="alt-out">5.0 m</span></div>
+      <label style="margin-top:12px">
+        <span>Service endpoint</span>
+        <input type="text" id="endpoint" value="http://127.0.0.1:8787/v1/missions/validate"
+               style="width:100%;padding:6px 8px;font-family:var(--data);font-size:12px;border:1px solid var(--rule);background:#fff">
+      </label>
+      <div class="controls">
+        <button id="send" disabled>Validate mission</button>
+        <button id="reset">Reset</button>
+      </div>
+    </div>
+
+    <div class="block" id="result-block">
+      <h2>Nightjar decision</h2>
+      <p class="hint" id="result-empty">No mission submitted yet.</p>
+      <div id="result" hidden></div>
+    </div>
+
+    <div class="block">
+      <h2>Map legend</h2>
+      <div class="row"><span><span class="legend-swatch" style="border-top:3px solid #A81E63"></span>Proposed (client)</span><span></span></div>
+      <div class="row"><span><span class="legend-swatch" style="border-top:3px dashed #1F5C8B"></span>Normalized (Nightjar)</span><span></span></div>
+      <p class="hint">The dashed track is re-derived from the mission Nightjar actually parsed.
+        Divergence between the two lines means the conversion is wrong.</p>
+    </div>
+  </div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+"use strict";
+
+// Mission IDs are stable for retries of the same proposal, but rotate whenever
+// the operator changes the proposal. This keeps hash comparison meaningful
+// without reusing one UUID across unrelated missions.
+let missionId = crypto.randomUUID();
+const EARTH_R = 6378137;
+
+const map = L.map("map").fitWorld();
+L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+  maxZoom: 19,
+  attribution: "© OpenStreetMap"
+}).addTo(map);
+
+let home = null, dest = null;
+let homeMarker = null, destMarker = null, proposedLine = null, normalizedLine = null, fence = null;
+
+const $ = (id) => document.getElementById(id);
+
+/* ---- EXPERIMENTAL client-side geodesy -------------------------------
+   Local tangent plane, equirectangular. Adequate at tens of metres.
+   This is demo scaffolding. It is not, and must not become, the frame
+   authority for an executable mission. See docs/atak-integration.md §5. */
+
+function toNED(origin, point) {
+  const latRad = origin.lat * Math.PI / 180;
+  return {
+    north_m: (point.lat - origin.lat) * Math.PI / 180 * EARTH_R,
+    east_m: (point.lng - origin.lng) * Math.PI / 180 * EARTH_R * Math.cos(latRad)
+  };
+}
+
+function toWGS84(origin, ned) {
+  const latRad = origin.lat * Math.PI / 180;
+  return [
+    origin.lat + (ned.north_m / EARTH_R) * 180 / Math.PI,
+    origin.lng + (ned.east_m / (EARTH_R * Math.cos(latRad))) * 180 / Math.PI
+  ];
+}
+
+/* ---- Map interaction ---- */
+
+map.on("click", (event) => {
+  if (!home) {
+    home = event.latlng;
+    homeMarker = L.circleMarker(home, { radius: 7, color: "#17211C", fillColor: "#17211C", fillOpacity: 1 })
+      .addTo(map).bindTooltip("Home (0,0)");
+    $("row-home").innerHTML = `<span>Home</span><span>${home.lat.toFixed(5)}, ${home.lng.toFixed(5)}</span>`;
+    $("row-home").classList.remove("row--pending");
+    $("stage-hint").textContent = "Now click the destination.";
+    drawFence();
+  } else {
+    dest = event.latlng;
+    missionId = crypto.randomUUID();
+    if (destMarker) map.removeLayer(destMarker);
+    destMarker = L.circleMarker(dest, { radius: 7, color: "#A81E63", fillColor: "#A81E63", fillOpacity: 1 })
+      .addTo(map).bindTooltip("Destination");
+    const ned = toNED(home, dest);
+    $("row-dest").innerHTML = `<span>Destination</span><span>${dest.lat.toFixed(5)}, ${dest.lng.toFixed(5)}</span>`;
+    $("row-ned").innerHTML = `<span>Converted NED</span><span>N ${ned.north_m.toFixed(1)} · E ${ned.east_m.toFixed(1)}</span>`;
+    $("row-dest").classList.remove("row--pending");
+    $("row-ned").classList.remove("row--pending");
+    $("stage-hint").textContent = "Click again to move the destination.";
+    $("send").disabled = false;
+    drawProposed();
+  }
+});
+
+function drawFence() {
+  if (fence) map.removeLayer(fence);
+  // 30 m ring, mirroring PolicyLimits.max_distance_from_home_m. The service
+  // returns the authoritative value; this is a pre-submission hint only.
+  fence = L.circle(home, { radius: 30, color: "#55645C", weight: 1, dashArray: "3 5", fill: false })
+    .addTo(map).bindTooltip("30 m policy hint");
+}
+
+function drawProposed() {
+  if (proposedLine) map.removeLayer(proposedLine);
+  proposedLine = L.polyline([home, dest, home], { color: "#A81E63", weight: 3 }).addTo(map);
+}
+
+/* ---- Submit ---- */
+
+function buildMission() {
+  const ned = toNED(home, dest);
+  const altitude = parseFloat($("alt").value);
+  return {
+    mission_id: missionId,
+    description: "ATAK phase 0 probe: operator-selected destination.",
+    actions: [
+      { type: "takeoff", altitude_m: altitude },
+      { type: "goto", north_m: +ned.north_m.toFixed(2), east_m: +ned.east_m.toFixed(2), altitude_m: altitude },
+      { type: "return_home" },
+      { type: "land" }
+    ]
+  };
+}
+
+function setWire(state, label) {
+  $("wire").dataset.state = state;
+  $("wire-label").textContent = label;
+}
+
+async function submit() {
+  setWire("sending", "Sending");
+  $("send").disabled = true;
+
+  let body;
+  try {
+    const response = await fetch($("endpoint").value, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mission: buildMission() })
+    });
+    body = await response.json();
+  } catch (error) {
+    setWire("idle", "Unreachable");
+    showUnreachable();
+    $("send").disabled = false;
+    return;
+  }
+
+  setWire("done", "Response received");
+  render(body);
+  $("send").disabled = false;
+}
+
+function showUnreachable() {
+  $("result-empty").hidden = true;
+  const box = $("result");
+  box.hidden = false;
+  box.innerHTML = `
+    <div class="verdict verdict--rejected">
+      <div class="verdict__head">No response</div>
+      <p class="hint">The validation service did not answer at that address.
+      Start it with <code>python -m nightjar.service</code>, and on a device run
+      <code>adb reverse tcp:8787 tcp:8787</code>.</p>
+    </div>`;
+}
+
+function render(body) {
+  $("result-empty").hidden = true;
+  const box = $("result");
+  box.hidden = false;
+
+  if (body.error) {
+    box.innerHTML = `
+      <div class="verdict verdict--rejected">
+        <div class="verdict__head">Malformed proposal</div>
+        <ul class="reasons">${body.reasons.map((r) => `<li>${escapeHtml(r)}</li>`).join("")}</ul>
+        <div class="stamp-auth">Authorization: ${escapeHtml(body.authorization)}</div>
+      </div>`;
+    return;
+  }
+
+  const approved = body.approved;
+  box.innerHTML = `
+    <div class="verdict ${approved ? "verdict--approved" : "verdict--rejected"}">
+      <div class="verdict__head">${approved ? "Policy approved" : "Policy rejected"}</div>
+      ${approved
+        ? `<p class="hint">Within altitude, distance, aggregate budget and termination limits.</p>`
+        : `<ul class="reasons">${body.reasons.map((r) => `<li>${escapeHtml(r)}</li>`).join("")}</ul>`}
+      <div class="stamp-auth">Authorization: required — not granted</div>
+      <div style="margin-top:12px">
+        <div class="row"><span>mission_sha256</span><span></span></div>
+        <div class="hash">${escapeHtml(body.mission_sha256)}</div>
+        <div class="row" style="margin-top:6px"><span>policy_sha256</span><span></span></div>
+        <div class="hash">${escapeHtml(body.policy_sha256)}</div>
+      </div>
+    </div>`;
+
+  drawNormalized(body.normalized_mission);
+}
+
+function drawNormalized(mission) {
+  if (normalizedLine) map.removeLayer(normalizedLine);
+
+  // Re-derive the track from what Nightjar actually parsed, not from what we
+  // sent. A visible gap between the two lines is the failure signal.
+  const track = [[home.lat, home.lng]];
+  for (const action of mission.actions) {
+    if (action.type === "goto") {
+      track.push(toWGS84(home, { north_m: action.north_m, east_m: action.east_m }));
+    } else if (action.type === "return_home") {
+      track.push([home.lat, home.lng]);
+    }
+  }
+
+  normalizedLine = L.polyline(track, {
+    color: "#1F5C8B", weight: 3, dashArray: "7 7", opacity: .95
+  }).addTo(map).bindTooltip("Normalized by Nightjar");
+}
+
+function escapeHtml(value) {
+  return String(value).replace(/[&<>"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+/* ---- Controls ---- */
+
+$("alt").addEventListener("input", (e) => {
+  missionId = crypto.randomUUID();
+  $("alt-out").textContent = parseFloat(e.target.value).toFixed(1) + " m";
+});
+
+$("send").addEventListener("click", submit);
+
+$("reset").addEventListener("click", () => {
+  [homeMarker, destMarker, proposedLine, normalizedLine, fence]
+    .forEach((layer) => layer && map.removeLayer(layer));
+  home = dest = null;
+  missionId = crypto.randomUUID();
+  homeMarker = destMarker = proposedLine = normalizedLine = fence = null;
+  $("row-home").innerHTML = "<span>Home</span><span>Click map</span>";
+  $("row-dest").innerHTML = "<span>Destination</span><span>—</span>";
+  $("row-ned").innerHTML = "<span>Converted NED</span><span>—</span>";
+  ["row-home", "row-dest", "row-ned"].forEach((id) => $(id).classList.add("row--pending"));
+  $("stage-hint").textContent = "First click sets home. Second sets the destination.";
+  $("send").disabled = true;
+  $("result").hidden = true;
+  $("result-empty").hidden = false;
+  setWire("idle", "Idle");
+});
+</script>
+</body>
+</html>
