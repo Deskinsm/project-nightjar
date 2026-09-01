@@ -14,6 +14,7 @@ from nightjar.approval import (
     build_approval_payload,
     sign_approval,
 )
+from nightjar.audit import write_audit_record
 from nightjar.authorization import verify_and_consume_approval
 from nightjar.mavsdk_executor import (
     MAVSDK_EXECUTOR_NAME,
@@ -642,3 +643,149 @@ def test_unsupported_action_does_not_consume_approval(tmp_path) -> None:
     )
 
     assert verified == approval.payload
+
+
+# --- Audit failure boundary ----------------------------------------------------
+#
+# These tests rely on an import-binding detail: mavsdk_executor.py binds
+# ``write_audit_record`` at import time, while ``write_audit_record_best_effort``
+# resolves ``nightjar.audit.write_audit_record`` at call time. Patching the
+# module global in ``nightjar.audit`` therefore fails ONLY the best-effort path,
+# leaving the executor's strict pre-flight writes untouched. If the executor's
+# import style ever changes, these tests will break loudly rather than silently.
+
+
+def _mission_takeoff_hold_land() -> Mission:
+    return Mission.model_validate(
+        {
+            "description": "Audit boundary test",
+            "actions": [
+                {"type": "takeoff", "altitude_m": 5},
+                {"type": "hold", "duration_seconds": 1},
+                {"type": "land"},
+            ],
+        }
+    )
+
+
+def test_audit_failure_after_takeoff_does_not_abort_flight(tmp_path, monkeypatch, capsys) -> None:
+    mission = _mission_takeoff_hold_land()
+    drone = FakeSystem()
+
+    def broken_writer(**kwargs):
+        raise OSError("simulated disk full")
+
+    monkeypatch.setattr("nightjar.audit.write_audit_record", broken_writer)
+
+    async def fake_sleep(seconds: float) -> None:
+        return None
+
+    private_key = Ed25519PrivateKey.generate()
+    approval = build_approval(private_key=private_key, mission=mission)
+    executor = build_executor(
+        private_key=private_key,
+        tmp_path=tmp_path,
+        system_factory=lambda: drone,
+        sleep_function=fake_sleep,
+        log_directory=tmp_path,
+    )
+
+    result = executor.execute(mission, approval=approval)
+
+    # Flight control ran to completion despite every post-commit audit write failing.
+    assert result.completed is True
+    assert ("takeoff", None) in drone.calls
+    assert ("land", None) in drone.calls
+
+    # Strict pre-flight records were written; nothing after the boundary was.
+    records = (tmp_path / f"{mission.mission_id}.jsonl").read_text(encoding="utf-8")
+    assert '"event": "mission_started"' in records
+    assert '"event": "action_started"' in records
+    assert '"action_type": "takeoff"' not in records  # takeoff's action_completed is post-boundary
+    assert '"event": "mission_completed"' not in records
+
+    # Every lost record was reported through the fallback.
+    stderr = capsys.readouterr().err
+    assert stderr.count("nightjar-audit-fallback") == 6  # takeoff done, hold x2, land x2, completed
+    assert "error_type=OSError" in stderr
+
+
+def test_audit_failure_before_takeoff_aborts_flight(tmp_path, monkeypatch) -> None:
+    mission = _mission_takeoff_hold_land()
+    drone = FakeSystem()
+    calls = 0
+
+    real_writer = write_audit_record
+
+    def writer_failing_on_takeoff_record(**kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:  # 1 = mission_started, 2 = TAKEOFF action_started
+            raise OSError("simulated audit failure before takeoff")
+        return real_writer(**kwargs)
+
+    # Patch the executor's own binding so the STRICT path fails.
+    monkeypatch.setattr(
+        "nightjar.mavsdk_executor.write_audit_record", writer_failing_on_takeoff_record
+    )
+
+    private_key = Ed25519PrivateKey.generate()
+    approval = build_approval(private_key=private_key, mission=mission)
+    executor = build_executor(
+        private_key=private_key,
+        tmp_path=tmp_path,
+        system_factory=lambda: drone,
+        log_directory=tmp_path,
+    )
+
+    with pytest.raises(OSError, match="before takeoff"):
+        executor.execute(mission, approval=approval)
+
+    # Connected, but never armed or launched: fail closed on audit integrity.
+    assert ("connect", "udpin://127.0.0.1:14540") in drone.calls
+    assert ("arm", None) not in drone.calls
+    assert ("takeoff", None) not in drone.calls
+
+
+def test_audit_failure_in_handler_does_not_mask_flight_exception(tmp_path, monkeypatch) -> None:
+    mission = _mission_takeoff_hold_land()
+
+    class FailingAction(FakeAction):
+        async def arm(self) -> None:
+            self.calls.append(("arm", None))
+            raise RuntimeError("simulated arm failure")
+
+    drone = FakeSystem()
+    drone.action = FailingAction(drone.calls)
+    calls = 0
+    real_writer = write_audit_record
+
+    def writer_failing_from_third_call(**kwargs):
+        nonlocal calls
+        calls += 1
+        if calls >= 3:  # 1 = mission_started, 2 = TAKEOFF action_started, 3 = mission_failed
+            raise OSError("simulated disk full")
+        return real_writer(**kwargs)
+
+    # Patch BOTH bindings so the handler's write fails whichever path it takes.
+    # Against the pre-fix executor this masks the arm failure with the OSError.
+    monkeypatch.setattr(
+        "nightjar.mavsdk_executor.write_audit_record", writer_failing_from_third_call
+    )
+    monkeypatch.setattr("nightjar.audit.write_audit_record", writer_failing_from_third_call)
+
+    private_key = Ed25519PrivateKey.generate()
+    approval = build_approval(private_key=private_key, mission=mission)
+    executor = build_executor(
+        private_key=private_key,
+        tmp_path=tmp_path,
+        system_factory=lambda: drone,
+        log_directory=tmp_path,
+    )
+
+    # The original flight exception must surface, not the audit failure that
+    # occurred while trying to record it.
+    with pytest.raises(RuntimeError, match="simulated arm failure"):
+        executor.execute(mission, approval=approval)
+
+    assert calls == 3

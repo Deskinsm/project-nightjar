@@ -9,7 +9,7 @@ from typing import Any
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 from nightjar.approval import SignedApproval
-from nightjar.audit import write_audit_record
+from nightjar.audit import write_audit_record, write_audit_record_best_effort
 from nightjar.authorization import verify_and_consume_approval
 from nightjar.executor import ExecutionResult
 from nightjar.models import HoldAction, LandAction, Mission, TakeoffAction
@@ -105,6 +105,7 @@ class MavsdkExecutor:
     async def _execute(self, mission: Mission) -> ExecutionResult:
         drone = self.system_factory()
 
+        # Strict: if Nightjar cannot record that a flight is starting, it must not start.
         log_path = write_audit_record(
             mission_id=mission.mission_id,
             event="mission_started",
@@ -116,12 +117,19 @@ class MavsdkExecutor:
             log_directory=self.log_directory,
         )
 
+        # Flips to True once takeoff() has been accepted by the vehicle. Before that
+        # point an audit failure aborts the mission (fail closed on audit integrity).
+        # After it, the vehicle may be airborne and an audit failure must never
+        # interrupt flight control. This flag selects strict vs best-effort auditing
+        # only; it carries no recovery behavior.
+        flight_committed = False
+
         try:
             await drone.connect(system_address=self.system_address)
             await self._wait_for_connection(drone)
 
             for sequence, action in enumerate(mission.actions, start=1):
-                write_audit_record(
+                self._audit_writer(flight_committed)(
                     mission_id=mission.mission_id,
                     event="action_started",
                     details={
@@ -136,6 +144,10 @@ class MavsdkExecutor:
                     await drone.action.set_takeoff_altitude(action.altitude_m)
                     await drone.action.arm()
                     await drone.action.takeoff()
+
+                    # ---- SAFETY BOUNDARY: the vehicle may now be airborne. ----
+                    flight_committed = True
+
                     await self._wait_until_takeoff_altitude(
                         drone,
                         target_altitude_m=action.altitude_m,
@@ -148,7 +160,7 @@ class MavsdkExecutor:
                     await drone.action.land()
                     await self._wait_until_landed(drone)
 
-                write_audit_record(
+                self._audit_writer(flight_committed)(
                     mission_id=mission.mission_id,
                     event="action_completed",
                     details={
@@ -160,7 +172,9 @@ class MavsdkExecutor:
                 )
 
         except Exception as exc:
-            write_audit_record(
+            # Best-effort regardless of phase: a failing audit write here would
+            # otherwise replace the original exception with its own.
+            write_audit_record_best_effort(
                 mission_id=mission.mission_id,
                 event="mission_failed",
                 details={
@@ -171,7 +185,9 @@ class MavsdkExecutor:
             )
             raise
 
-        write_audit_record(
+        # Best-effort: a logging failure after a completed flight must not
+        # reinterpret that flight as an execution failure.
+        write_audit_record_best_effort(
             mission_id=mission.mission_id,
             event="mission_completed",
             details={"executor": MAVSDK_EXECUTOR_NAME},
@@ -179,6 +195,11 @@ class MavsdkExecutor:
         )
 
         return ExecutionResult(completed=True, log_path=log_path)
+
+    @staticmethod
+    def _audit_writer(flight_committed: bool) -> Callable[..., Path | None]:
+        """Select the audit writer for the current flight phase."""
+        return write_audit_record_best_effort if flight_committed else write_audit_record
 
     async def _wait_for_connection(self, drone: Any) -> None:
         async def wait() -> None:
