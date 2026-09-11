@@ -60,6 +60,9 @@ class FakeAction:
     async def arm(self) -> None:
         self.calls.append(("arm", None))
 
+    async def disarm(self) -> None:
+        self.calls.append(("disarm", None))
+
     async def takeoff(self) -> None:
         self.calls.append(("takeoff", None))
 
@@ -789,3 +792,351 @@ def test_audit_failure_in_handler_does_not_mask_flight_exception(tmp_path, monke
         executor.execute(mission, approval=approval)
 
     assert calls == 3
+
+
+@pytest.mark.parametrize("failure_phase", ["takeoff", "hold"])
+@pytest.mark.parametrize("error_type", [RuntimeError, KeyboardInterrupt])
+def test_flight_failure_attempts_land_and_preserves_original_error(
+    tmp_path, failure_phase, error_type
+) -> None:
+    mission = _mission_takeoff_hold_land()
+    original_error = error_type(f"simulated {failure_phase} failure")
+
+    class RecoveryTestAction(FakeAction):
+        async def takeoff(self) -> None:
+            await super().takeoff()
+            if failure_phase == "takeoff":
+                raise original_error
+
+    drone = FakeSystem()
+    drone.action = RecoveryTestAction(drone.calls)
+    hold_calls = []
+
+    async def failing_hold(seconds: float) -> None:
+        hold_calls.append(seconds)
+        raise original_error
+
+    private_key = Ed25519PrivateKey.generate()
+    approval = build_approval(private_key=private_key, mission=mission)
+    executor = build_executor(
+        private_key=private_key,
+        tmp_path=tmp_path,
+        system_factory=lambda: drone,
+        sleep_function=failing_hold,
+        log_directory=tmp_path,
+    )
+
+    with pytest.raises(error_type) as caught:
+        executor.execute(mission, approval=approval)
+
+    assert caught.value is original_error
+    assert hold_calls == ([] if failure_phase == "takeoff" else [1])
+    assert drone.calls.count(("land", None)) == 1
+    assert drone.calls[-1] == ("land", None)
+
+
+def test_recovery_land_failure_preserves_original_error(tmp_path) -> None:
+    import json
+
+    mission = _mission_takeoff_hold_land()
+    original_error = RuntimeError("simulated hold failure")
+
+    class FailedRecoveryAction(FakeAction):
+        async def land(self) -> None:
+            await super().land()
+            raise OSError("simulated recovery land failure")
+
+    drone = FakeSystem()
+    drone.action = FailedRecoveryAction(drone.calls)
+
+    async def failing_hold(seconds: float) -> None:
+        raise original_error
+
+    private_key = Ed25519PrivateKey.generate()
+    approval = build_approval(private_key=private_key, mission=mission)
+    executor = build_executor(
+        private_key=private_key,
+        tmp_path=tmp_path,
+        system_factory=lambda: drone,
+        sleep_function=failing_hold,
+        log_directory=tmp_path,
+    )
+
+    with pytest.raises(RuntimeError) as caught:
+        executor.execute(mission, approval=approval)
+
+    assert caught.value is original_error
+    assert drone.calls.count(("land", None)) == 1
+
+    records = [
+        json.loads(line)
+        for line in (tmp_path / f"{mission.mission_id}.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    failures = [record for record in records if record["event"] == "mission_failed"]
+    assert len(failures) == 1
+    assert failures[0]["details"]["error"] == str(original_error)
+    assert failures[0]["details"]["recovery_status"] == "failed"
+    assert failures[0]["details"]["recovery_error_type"] == "OSError"
+    assert not any(record["event"] == "mission_completed" for record in records)
+
+
+@pytest.mark.parametrize("stall_phase", ["command", "telemetry"])
+def test_recovery_timeout_preserves_original_error(tmp_path, stall_phase) -> None:
+    import json
+
+    mission = _mission_takeoff_hold_land()
+    original_error = RuntimeError("simulated hold failure")
+    stalled_operations = []
+    cancelled_operations = []
+
+    async def stall() -> None:
+        stalled_operations.append(stall_phase)
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled_operations.append(stall_phase)
+
+    class StalledRecoveryAction(FakeAction):
+        async def land(self) -> None:
+            await super().land()
+            if stall_phase == "command":
+                await stall()
+
+    class StalledRecoveryTelemetry(FakeTelemetry):
+        async def in_air(self):
+            yield True
+            await stall()
+
+    drone = FakeSystem()
+    drone.action = StalledRecoveryAction(drone.calls)
+    drone.telemetry = StalledRecoveryTelemetry()
+
+    async def failing_hold(seconds: float) -> None:
+        raise original_error
+
+    private_key = Ed25519PrivateKey.generate()
+    approval = build_approval(private_key=private_key, mission=mission)
+    executor = build_executor(
+        private_key=private_key,
+        tmp_path=tmp_path,
+        system_factory=lambda: drone,
+        sleep_function=failing_hold,
+        log_directory=tmp_path,
+        landing_timeout_seconds=0.05,
+    )
+
+    with pytest.raises(RuntimeError) as caught:
+        executor.execute(mission, approval=approval)
+
+    assert caught.value is original_error
+    assert drone.calls.count(("land", None)) == 1
+    assert stalled_operations == [stall_phase]
+    assert cancelled_operations == [stall_phase]
+
+    records = [
+        json.loads(line)
+        for line in (tmp_path / f"{mission.mission_id}.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    failures = [record for record in records if record["event"] == "mission_failed"]
+    assert len(failures) == 1
+    assert failures[0]["details"]["recovery_status"] == "failed"
+    assert failures[0]["details"]["recovery_error_type"] == "TimeoutError"
+    assert not any(record["event"] == "mission_completed" for record in records)
+
+
+def test_cancellation_during_hold_attempts_land_then_propagates(tmp_path) -> None:
+    mission = _mission_takeoff_hold_land()
+    drone = FakeSystem()
+    cancellations = []
+
+    async def cancelled_hold(seconds: float) -> None:
+        task = asyncio.current_task()
+        assert task is not None
+        task.cancel("simulated operator cancellation")
+        try:
+            await asyncio.sleep(0)
+        except asyncio.CancelledError as exc:
+            cancellations.append(exc)
+            raise
+
+    private_key = Ed25519PrivateKey.generate()
+    approval = build_approval(private_key=private_key, mission=mission)
+    executor = build_executor(
+        private_key=private_key,
+        tmp_path=tmp_path,
+        system_factory=lambda: drone,
+        sleep_function=cancelled_hold,
+        log_directory=tmp_path,
+    )
+
+    with pytest.raises(asyncio.CancelledError) as caught:
+        executor.execute(mission, approval=approval)
+
+    assert len(cancellations) == 1
+    assert caught.value is cancellations[0]
+    assert drone.calls.count(("land", None)) == 1
+    assert drone.calls[-1] == ("land", None)
+
+
+def test_second_cancellation_does_not_abandon_recovery(tmp_path) -> None:
+    mission = _mission_takeoff_hold_land()
+    drone = FakeSystem()
+    mission_tasks = []
+    original_cancellations = []
+    landing_completed = []
+
+    async def cancelled_hold(seconds: float) -> None:
+        task = asyncio.current_task()
+        assert task is not None
+        mission_tasks.append(task)
+        task.cancel("first cancellation")
+        try:
+            await asyncio.sleep(0)
+        except asyncio.CancelledError as exc:
+            original_cancellations.append(exc)
+            raise
+
+    class InterruptedRecoveryAction(FakeAction):
+        async def land(self) -> None:
+            await super().land()
+            mission_tasks[0].cancel("second cancellation")
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+            landing_completed.append(True)
+
+    drone.action = InterruptedRecoveryAction(drone.calls)
+
+    private_key = Ed25519PrivateKey.generate()
+    approval = build_approval(private_key=private_key, mission=mission)
+    executor = build_executor(
+        private_key=private_key,
+        tmp_path=tmp_path,
+        system_factory=lambda: drone,
+        sleep_function=cancelled_hold,
+        log_directory=tmp_path,
+    )
+
+    with pytest.raises(asyncio.CancelledError) as caught:
+        executor.execute(mission, approval=approval)
+
+    assert len(original_cancellations) == 1
+    assert caught.value is original_cancellations[0]
+    assert landing_completed == [True]
+    assert drone.calls.count(("land", None)) == 1
+
+
+@pytest.mark.parametrize("in_air", [False, True])
+def test_arm_failure_recovers_according_to_telemetry(tmp_path, in_air) -> None:
+    mission = _mission_takeoff_hold_land()
+    original_error = RuntimeError("arm acknowledgment lost")
+    telemetry_observations = []
+
+    class ArmFailureAction(FakeAction):
+        async def arm(self) -> None:
+            await super().arm()
+            raise original_error
+
+        async def disarm(self) -> None:
+            assert telemetry_observations == [False]
+            self.calls.append(("disarm", None))
+
+    class RecoveryTelemetry(FakeTelemetry):
+        async def in_air(self):
+            # After a landing request, report touchdown.
+            observed = in_air and ("land", None) not in drone.calls
+            telemetry_observations.append(observed)
+            yield observed
+
+    drone = FakeSystem()
+    drone.action = ArmFailureAction(drone.calls)
+    drone.telemetry = RecoveryTelemetry()
+
+    private_key = Ed25519PrivateKey.generate()
+    approval = build_approval(private_key=private_key, mission=mission)
+    executor = build_executor(
+        private_key=private_key,
+        tmp_path=tmp_path,
+        system_factory=lambda: drone,
+        log_directory=tmp_path,
+    )
+
+    with pytest.raises(RuntimeError) as caught:
+        executor.execute(mission, approval=approval)
+
+    assert caught.value is original_error
+    assert ("takeoff", None) not in drone.calls
+
+    if in_air:
+        assert drone.calls.count(("land", None)) == 1
+        assert ("disarm", None) not in drone.calls
+        assert telemetry_observations == [True, False]
+    else:
+        assert drone.calls.count(("disarm", None)) == 1
+        assert ("land", None) not in drone.calls
+        assert telemetry_observations == [False]
+
+
+@pytest.mark.parametrize("telemetry_failure", ["empty", "invalid", "error", "stall"])
+def test_arm_recovery_without_valid_telemetry_never_disarms(tmp_path, telemetry_failure) -> None:
+    import json
+
+    mission = _mission_takeoff_hold_land()
+    original_error = RuntimeError("arm acknowledgment lost")
+
+    class ArmFailureAction(FakeAction):
+        async def arm(self) -> None:
+            await super().arm()
+            raise original_error
+
+    class UnavailableTelemetry(FakeTelemetry):
+        async def in_air(self):
+            if telemetry_failure == "invalid":
+                yield None
+            elif telemetry_failure == "error":
+                raise OSError("telemetry unavailable")
+            elif telemetry_failure == "stall":
+                await asyncio.Event().wait()
+
+    drone = FakeSystem()
+    drone.action = ArmFailureAction(drone.calls)
+    drone.telemetry = UnavailableTelemetry()
+
+    private_key = Ed25519PrivateKey.generate()
+    approval = build_approval(private_key=private_key, mission=mission)
+    executor = build_executor(
+        private_key=private_key,
+        tmp_path=tmp_path,
+        system_factory=lambda: drone,
+        log_directory=tmp_path,
+        landing_timeout_seconds=0.05,
+    )
+
+    with pytest.raises(RuntimeError) as caught:
+        executor.execute(mission, approval=approval)
+
+    assert caught.value is original_error
+    assert ("takeoff", None) not in drone.calls
+    assert ("disarm", None) not in drone.calls
+    assert ("land", None) not in drone.calls
+
+    records = [
+        json.loads(line)
+        for line in (tmp_path / f"{mission.mission_id}.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    failures = [record for record in records if record["event"] == "mission_failed"]
+    assert len(failures) == 1
+    assert failures[0]["details"]["recovery_status"] == "failed"
+    expected_error = {
+        "empty": "MavsdkExecutorError",
+        "invalid": "MavsdkExecutorError",
+        "error": "OSError",
+        "stall": "TimeoutError",
+    }
+    assert failures[0]["details"]["recovery_error_type"] == expected_error[telemetry_failure]
+    assert not any(record["event"] == "mission_completed" for record in records)
