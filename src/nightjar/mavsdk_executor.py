@@ -123,6 +123,8 @@ class MavsdkExecutor:
         # interrupt flight control. This flag selects strict vs best-effort auditing
         # only; it carries no recovery behavior.
         flight_committed = False
+        recovery_required = False
+        takeoff_attempted = False
 
         try:
             await drone.connect(system_address=self.system_address)
@@ -142,10 +144,15 @@ class MavsdkExecutor:
 
                 if isinstance(action, TakeoffAction):
                     await drone.action.set_takeoff_altitude(action.altitude_m)
-                    await drone.action.arm()
-                    await drone.action.takeoff()
 
-                    # ---- SAFETY BOUNDARY: the vehicle may now be airborne. ----
+                    # Arm may reach the vehicle even if its acknowledgment fails.
+                    takeoff_attempted = False
+                    recovery_required = True
+                    await drone.action.arm()
+
+                    # Once attempted, takeoff requires landing recovery.
+                    takeoff_attempted = True
+                    await drone.action.takeoff()
                     flight_committed = True
 
                     await self._wait_until_takeoff_altitude(
@@ -159,6 +166,7 @@ class MavsdkExecutor:
                 elif isinstance(action, LandAction):
                     await drone.action.land()
                     await self._wait_until_landed(drone)
+                    recovery_required = False
 
                 self._audit_writer(flight_committed)(
                     mission_id=mission.mission_id,
@@ -171,15 +179,30 @@ class MavsdkExecutor:
                     log_directory=self.log_directory,
                 )
 
-        except Exception as exc:
-            # Best-effort regardless of phase: a failing audit write here would
-            # otherwise replace the original exception with its own.
+        except (Exception, asyncio.CancelledError, KeyboardInterrupt) as exc:
+            recovery_status = "not_required"
+            recovery_error_type = None
+
+            if recovery_required:
+                try:
+                    recovery_status = await self._recover_protected(
+                        drone, takeoff_attempted=takeoff_attempted
+                    )
+                # Preserve the original mission failure if recovery also fails.
+                except (Exception, asyncio.CancelledError) as recovery_exc:  # noqa: BLE001
+                    recovery_status = "failed"
+                    recovery_error_type = type(recovery_exc).__name__
+
+            # Recovery runs before logging, and its failure does not replace
+            # the original mission exception.
             write_audit_record_best_effort(
                 mission_id=mission.mission_id,
                 event="mission_failed",
                 details={
                     "executor": MAVSDK_EXECUTOR_NAME,
                     "error": str(exc),
+                    "recovery_status": recovery_status,
+                    "recovery_error_type": recovery_error_type,
                 },
                 log_directory=self.log_directory,
             )
@@ -200,6 +223,43 @@ class MavsdkExecutor:
     def _audit_writer(flight_committed: bool) -> Callable[..., Path | None]:
         """Select the audit writer for the current flight phase."""
         return write_audit_record_best_effort if flight_committed else write_audit_record
+
+    async def _recover_protected(self, drone: Any, *, takeoff_attempted: bool) -> str:
+        """Finish bounded recovery despite cancellation of the mission task."""
+        recovery_task = asyncio.create_task(
+            asyncio.wait_for(
+                self._recover(drone, takeoff_attempted=takeoff_attempted),
+                timeout=self.landing_timeout_seconds,
+            )
+        )
+
+        while not recovery_task.done():
+            try:
+                await asyncio.shield(recovery_task)
+            except asyncio.CancelledError:
+                # Keep the same task and timeout through repeated cancellation.
+                continue
+
+        return recovery_task.result()
+
+    async def _recover(self, drone: Any, *, takeoff_attempted: bool) -> str:
+        """Choose cleanup from the attempted commands and vehicle telemetry."""
+        if not takeoff_attempted:
+            async for in_air in drone.telemetry.in_air():
+                if in_air is False:
+                    await drone.action.disarm()
+                    return "disarm_accepted"
+                if in_air is True:
+                    break
+                raise MavsdkExecutorError("Invalid in-air telemetry during arm recovery.")
+            else:
+                raise MavsdkExecutorError(
+                    "In-air telemetry ended before arm recovery could choose cleanup."
+                )
+
+        await drone.action.land()
+        await self._wait_until_landed(drone)
+        return "landing_confirmed"
 
     async def _wait_for_connection(self, drone: Any) -> None:
         async def wait() -> None:
