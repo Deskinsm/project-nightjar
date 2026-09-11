@@ -964,7 +964,6 @@ def test_cancellation_during_hold_attempts_land_then_propagates(tmp_path) -> Non
             raise
 
     private_key = Ed25519PrivateKey.generate()
-    approval = build_approval(private_key=private_key, mission=mission)
     executor = build_executor(
         private_key=private_key,
         tmp_path=tmp_path,
@@ -973,11 +972,14 @@ def test_cancellation_during_hold_attempts_land_then_propagates(tmp_path) -> Non
         log_directory=tmp_path,
     )
 
-    with pytest.raises(asyncio.CancelledError) as caught:
-        executor.execute(mission, approval=approval)
+    async def check_cancellation() -> None:
+        with pytest.raises(asyncio.CancelledError) as caught:
+            await executor._execute(mission)
 
-    assert len(cancellations) == 1
-    assert caught.value is cancellations[0]
+        assert len(cancellations) == 1
+        assert caught.value is cancellations[0]
+
+    asyncio.run(check_cancellation())
     assert drone.calls.count(("land", None)) == 1
     assert drone.calls[-1] == ("land", None)
 
@@ -1011,7 +1013,6 @@ def test_second_cancellation_does_not_abandon_recovery(tmp_path) -> None:
     drone.action = InterruptedRecoveryAction(drone.calls)
 
     private_key = Ed25519PrivateKey.generate()
-    approval = build_approval(private_key=private_key, mission=mission)
     executor = build_executor(
         private_key=private_key,
         tmp_path=tmp_path,
@@ -1020,11 +1021,14 @@ def test_second_cancellation_does_not_abandon_recovery(tmp_path) -> None:
         log_directory=tmp_path,
     )
 
-    with pytest.raises(asyncio.CancelledError) as caught:
-        executor.execute(mission, approval=approval)
+    async def check_cancellation() -> None:
+        with pytest.raises(asyncio.CancelledError) as caught:
+            await executor._execute(mission)
 
-    assert len(original_cancellations) == 1
-    assert caught.value is original_cancellations[0]
+        assert len(original_cancellations) == 1
+        assert caught.value is original_cancellations[0]
+
+    asyncio.run(check_cancellation())
     assert landing_completed == [True]
     assert drone.calls.count(("land", None)) == 1
 
