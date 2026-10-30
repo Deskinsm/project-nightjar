@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -100,10 +101,38 @@ class MavsdkExecutor:
             nonce_store=self.nonce_store,
         )
 
-        return asyncio.run(self._execute(mission))
+        drone_holder: list[Any] = []
 
-    async def _execute(self, mission: Mission) -> ExecutionResult:
+        async def _run() -> ExecutionResult:
+            return await self._execute(mission, drone_holder)
+
+        try:
+            return asyncio.run(_run())
+        finally:
+            # Explicitly stop mavsdk_server if the installed SDK exposes it.
+            # Do not assume a System.close() method exists. This is best-effort
+            # so a cleanup failure cannot replace the mission result.
+            for drone in drone_holder:
+                stop = getattr(drone, "_stop_mavsdk_server", None)
+                if callable(stop):
+                    try:
+                        stop()
+                    except Exception as exc:  # noqa: BLE001
+                        # Best-effort: a cleanup failure must not replace the
+                        # mission result. Log the type only.
+                        print(
+                            f"MAVSDK server stop failed: {type(exc).__name__}",
+                            file=sys.stderr,
+                        )
+
+    async def _execute(
+        self,
+        mission: Mission,
+        drone_holder: list[Any] | None = None,
+    ) -> ExecutionResult:
         drone = self.system_factory()
+        if drone_holder is not None:
+            drone_holder.append(drone)
 
         # Strict: if Nightjar cannot record that a flight is starting, it must not start.
         log_path = write_audit_record(
@@ -146,11 +175,20 @@ class MavsdkExecutor:
                     await drone.action.set_takeoff_altitude(action.altitude_m)
 
                     # Arm may reach the vehicle even if its acknowledgment fails.
+                    # recovery_required is set before the arm call so a lost
+                    # acknowledgment still enters cleanup.
                     takeoff_attempted = False
                     recovery_required = True
                     await drone.action.arm()
 
-                    # Once attempted, takeoff requires landing recovery.
+                    # An arm call that does not raise does not prove the vehicle
+                    # is armed. Wait for armed telemetry before takeoff.
+                    # Missing confirmation enters the existing cleanup path
+                    # (takeoff_attempted stays False).
+                    await self._wait_until_armed(drone)
+
+                    # Once armed confirmation is observed, takeoff requires
+                    # landing recovery.
                     takeoff_attempted = True
                     await drone.action.takeoff()
                     flight_committed = True
@@ -260,6 +298,30 @@ class MavsdkExecutor:
         await drone.action.land()
         await self._wait_until_landed(drone)
         return "landing_confirmed"
+
+    async def _wait_until_armed(self, drone: Any) -> None:
+        """Wait for armed telemetry. An arm call that does not raise is not proof."""
+
+        async def wait() -> None:
+            armed_stream = getattr(drone.telemetry, "armed", None)
+            if armed_stream is None:
+                raise MavsdkExecutorError(
+                    "MAVSDK telemetry does not expose armed state; cannot confirm arming."
+                )
+            async for is_armed in armed_stream():
+                if is_armed is True:
+                    return
+            raise MavsdkExecutorError(
+                "MAVSDK armed telemetry ended before the vehicle reported armed."
+            )
+
+        try:
+            await asyncio.wait_for(wait(), timeout=self.takeoff_timeout_seconds)
+        except asyncio.TimeoutError as exc:
+            raise MavsdkExecutorError(
+                f"Timed out waiting {self.takeoff_timeout_seconds:g} seconds "
+                "for armed telemetry after arm()."
+            ) from exc
 
     async def _wait_for_connection(self, drone: Any) -> None:
         async def wait() -> None:

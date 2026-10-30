@@ -49,6 +49,9 @@ class FakeTelemetry:
     async def in_air(self):
         yield False
 
+    async def armed(self):
+        yield True
+
 
 class FakeAction:
     def __init__(self, calls: list[tuple[str, Any]]) -> None:
@@ -307,6 +310,9 @@ def test_hold_waits_until_takeoff_altitude_is_reached(tmp_path) -> None:
         def __init__(self) -> None:
             self.altitudes_seen: list[float] = []
 
+        async def armed(self):
+            yield True
+
         async def position(self):
             for altitude_m in (1.0, 3.0, 4.6):
                 self.altitudes_seen.append(altitude_m)
@@ -362,6 +368,9 @@ def test_takeoff_timeout_blocks_hold_and_is_audited(tmp_path) -> None:
     )
 
     class StalledTelemetry:
+        async def armed(self):
+            yield True
+
         async def position(self):
             yield FakePosition(relative_altitude_m=1.0)
             await asyncio.sleep(1)

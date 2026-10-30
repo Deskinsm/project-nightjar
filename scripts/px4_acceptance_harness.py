@@ -31,6 +31,7 @@ import json
 import os
 import platform
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -161,21 +162,62 @@ def expected_audit_dir(state_home: Path) -> Path:
     return (state_home / "nightjar" / "audit").resolve()
 
 
+# Enough for connection (20s) + arm/takeoff (30s) + hold + land (30s)
+# + recovery window (30s), with margin. Forced cleanup only after this.
+SCENARIO_TIMEOUT_SECONDS = 180
+
+
 def run_command(
     cmd: list[str],
     *,
     state_home: Path,
     extra_env: dict[str, str] | None = None,
-) -> tuple[int, str, str]:
-    result = subprocess.run(
+    timeout_seconds: float = SCENARIO_TIMEOUT_SECONDS,
+) -> tuple[int, str, str, bool]:
+    """Run a command with a bounded timeout.
+
+    Returns (exit_code, stdout, stderr, timed_out). On timeout, partial
+    output is preserved, the process group is terminated, and the caller
+    still receives a result so the evidence bundle can be written.
+    """
+    env = isolated_env(state_home, extra_env)
+    # start_new_session so we can kill the whole process group, including
+    # any mavsdk_server child that would otherwise keep pipes open.
+    proc = subprocess.Popen(
         cmd,
-        capture_output=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
-        env=isolated_env(state_home, extra_env),
+        env=env,
         cwd=ROOT,
-        check=False,
+        start_new_session=True,
     )
-    return result.returncode, result.stdout, result.stderr
+    timed_out = False
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout_seconds)
+        return proc.returncode if proc.returncode is not None else 1, stdout, stderr, False
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        # Terminate the process group. The adapter itself may still be
+        # alive, or only a child may be holding the pipes; killing the
+        # group covers both.
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        try:
+            stdout, stderr = proc.communicate(timeout=10)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            stdout, stderr = proc.communicate()
+        note = (
+            f"\n[harness] scenario timed out after {timeout_seconds:g}s; "
+            "process group terminated.\n"
+        )
+        return 124, (stdout or "") + note, stderr or "", timed_out
 
 
 def collect_audit(state_home: Path, mission_id: str) -> Path | None:
@@ -269,7 +311,11 @@ def main() -> int:
             "--nonce-db",
             str(nonce_db),
         ]
-        code, out, err = run_command(cmd, state_home=state_home)
+        code, out, err, timed_out = run_command(cmd, state_home=state_home)
+        if timed_out:
+            detail_prefix = "TIMED OUT — "
+        else:
+            detail_prefix = ""
         audit = collect_audit(state_home, mission_id)
         ok, detail = signed_mission_passed(exit_code=code, stdout=out, audit_path=audit)
         success = write_scenario(
@@ -281,8 +327,8 @@ def main() -> int:
             stderr=err,
             audit_src=audit,
             notes="Expected: exit 0, success message, mission_completed audit.",
-            passed=ok,
-            detail=detail,
+            passed=ok and not timed_out,
+            detail=detail_prefix + detail,
         )
         print(f"  {'PASS' if ok else 'FAIL'}: {detail}")
         print(out.strip() or "(no stdout)")
@@ -290,7 +336,11 @@ def main() -> int:
         # --- Scenario 2: replay rejection ---
         print("\n=== Replay rejection ===")
         cmd2 = cmd  # same approval and nonce database
-        code2, out2, err2 = run_command(cmd2, state_home=key_dir / "state-replay")
+        code2, out2, err2, timed_out2 = run_command(cmd2, state_home=key_dir / "state-replay")
+        if timed_out2:
+            detail_prefix2 = "TIMED OUT — "
+        else:
+            detail_prefix2 = ""
         audit2 = collect_audit(key_dir / "state-replay", mission_id)
         ok2, detail2 = replay_rejected(exit_code=code2, stdout=out2, audit_path=audit2)
         replay = write_scenario(
@@ -301,15 +351,48 @@ def main() -> int:
             stdout=out2,
             stderr=err2,
             audit_src=audit2,
-            notes="Expected: exit 4, already-used rejection, no audit (no system creation).",
-            passed=ok2,
-            detail=detail2,
+            notes="Expected: exit 4, already-used rejection, no audit (supporting evidence).",
+            passed=ok2 and not timed_out2,
+            detail=detail_prefix2 + detail2,
         )
         print(f"  {'PASS' if ok2 else 'FAIL'}: {detail2}")
         print(out2.strip() or "(no stdout)")
 
         # --- Scenario 3: controlled failure during hold ---
+        # Isolate recovery testing from the first flight's leftover state
+        # by restarting PX4 when a restart command is provided. A fresh
+        # boot is a practical isolation measure; one failed second flight
+        # does not establish that SIH always requires a restart.
         print("\n=== Controlled failure during hold ===")
+        restart_log = bundle / "px4_restart.txt"
+        restart_cmd = os.environ.get("NIGHTJAR_PX4_RESTART_CMD")
+        if restart_cmd:
+            print(f"  Restarting PX4: {restart_cmd}")
+            restart = subprocess.run(
+                restart_cmd,
+                shell=True,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            restart_log.write_text(
+                f"command: {restart_cmd}\n"
+                f"exit: {restart.returncode}\n"
+                f"--- stdout ---\n{restart.stdout}\n"
+                f"--- stderr ---\n{restart.stderr}\n",
+                encoding="utf-8",
+            )
+            # Brief pause so the new instance can bind the port.
+            time.sleep(5)
+        else:
+            restart_log.write_text(
+                "No NIGHTJAR_PX4_RESTART_CMD set. Recovery scenario used "
+                "the existing PX4 instance. For isolation, set "
+                "NIGHTJAR_PX4_RESTART_CMD to a command that stops and "
+                "restarts PX4 SIH before this scenario.\n",
+                encoding="utf-8",
+            )
+
         approval_fail = key_dir / "approval-failure.json"
         nonce_db_fail = key_dir / "failure.sqlite3"
         state_home_fail = key_dir / "state-failure"
@@ -327,7 +410,11 @@ def main() -> int:
             "--nonce-db",
             str(nonce_db_fail),
         ]
-        code3, out3, err3 = run_command(cmd3, state_home=state_home_fail)
+        code3, out3, err3, timed_out3 = run_command(cmd3, state_home=state_home_fail)
+        if timed_out3:
+            detail_prefix3 = "TIMED OUT — "
+        else:
+            detail_prefix3 = ""
         audit3 = collect_audit(state_home_fail, mission_id)
         ok3, detail3 = controlled_failure_recovered(exit_code=code3, stdout=out3, audit_path=audit3)
         failure = write_scenario(
@@ -340,15 +427,18 @@ def main() -> int:
             audit_src=audit3,
             notes=(
                 f"Expected: exit 5, {INJECTED_ERROR!r} visible, "
-                "recovery_status=landing_confirmed, no recovery error."
+                "recovery_status=landing_confirmed, no recovery error. "
+                "Uses the acceptance-only adapter, not nightjar run."
             ),
-            passed=ok3,
-            detail=detail3,
+            passed=ok3 and not timed_out3,
+            detail=detail_prefix3 + detail3,
         )
         print(f"  {'PASS' if ok3 else 'FAIL'}: {detail3}")
         print(out3.strip() or "(no stdout)")
 
     # Manifest (no private key material)
+    overall = success["passed"] and replay["passed"] and failure["passed"]
+    overall_label = "PASS" if overall else "FAIL"
     manifest = {
         "timestamp_utc": timestamp,
         "git_sha": git_sha(),
@@ -358,6 +448,7 @@ def main() -> int:
         "python": platform.python_version(),
         "platform": platform.platform(),
         "package_versions": package_versions(),
+        "overall": overall_label,
         "scenarios": [success, replay, failure],
         "notes": (
             "Private signing keys were generated in a temporary directory "
@@ -373,6 +464,8 @@ def main() -> int:
     # Human-readable summary
     summary_lines = [
         "# PX4 Acceptance Evidence",
+        "",
+        f"**Overall: {overall_label}**",
         "",
         f"- Timestamp (UTC): {timestamp}",
         f"- Git SHA: {manifest['git_sha']}",
@@ -405,8 +498,8 @@ def main() -> int:
     ]
     (bundle / "SUMMARY.md").write_text("\n".join(summary_lines) + "\n", encoding="utf-8")
 
-    print(f"\nEvidence written to {bundle}")
-    overall = success["passed"] and replay["passed"] and failure["passed"]
+    print(f"\nOverall: {overall_label}")
+    print(f"Evidence written to {bundle}")
     return 0 if overall else 1
 
 
