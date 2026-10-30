@@ -92,7 +92,7 @@ def test_mavsdk_successful_dispatch_and_replay_rejection(
     nonce_db = tmp_path / "approvals.sqlite3"
 
     # Skip the real MAVSDK connection; only exercise authorization + dispatch.
-    async def fake_execute(self, mission):
+    async def fake_execute(self, mission, drone_holder=None):
         return ExecutionResult(completed=True, log_path=tmp_path / "audit.jsonl")
 
     import nightjar.mavsdk_executor as mev
@@ -152,7 +152,7 @@ def test_mavsdk_invalid_approval_does_not_consume(
     # A subsequent attempt with the correct key should succeed (nonce not spent).
     write_public_key(public_key, trusted)
 
-    async def fake_execute(self, mission):
+    async def fake_execute(self, mission, drone_holder=None):
         return ExecutionResult(completed=True, log_path=tmp_path / "audit.jsonl")
 
     import nightjar.mavsdk_executor as mev
