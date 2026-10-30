@@ -124,6 +124,33 @@ The repository does not include a private signing key or reusable approval envel
 
 See `docs/project-record.md` for the full architecture, verified milestones, and known limitations.
 
+## PX4 acceptance harness
+
+A repeatable acceptance check lives at `scripts/px4_acceptance_harness.py`. It generates ephemeral keys, issues fresh approvals, invokes the actual CLI, and writes a reviewable evidence bundle. Private keys stay in a temporary directory and are never copied into the bundle.
+
+Prerequisites:
+
+- Nightjar installed with the flight extra (`pip install -e ".[dev,flight]"`)
+- PX4 software simulation already running and reachable at `udpin://127.0.0.1:14540`
+
+Run:
+
+```bash
+python scripts/px4_acceptance_harness.py
+```
+
+The harness produces `evidence/px4-acceptance-<timestamp>/` containing a `SUMMARY.md`, a `manifest.json` (commit SHA, dependency versions, platform), and one directory per scenario with the exact command, exit code, stdout, stderr, and audit log when produced.
+
+Scenarios:
+
+| Scenario | Expected result |
+|---|---|
+| Signed mission | Takeoff → hold → telemetry-confirmed landing; exit 0 |
+| Replayed approval | Same approval and nonce database rejected before MAVSDK connection; exit 4 |
+| Controlled failure | Simulation-only failure during hold (`NIGHTJAR_SIM_FAIL_DURING_HOLD=1`, loopback only) triggers landing recovery; original error remains visible; exit 5 |
+
+The failure injection is honored only when the system address contains `127.0.0.1`. It does not affect non-simulation endpoints.
+
 ## Next milestone
 
 Validate the signed CLI path against a live PX4 software simulation, record successful completion and replay rejection, and exercise at least one recoverable failure scenario. That evidence is required before treating the authorized simulation path as a shippable v1.

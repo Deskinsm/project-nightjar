@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -162,6 +163,16 @@ class MavsdkExecutor:
 
                 elif isinstance(action, HoldAction):
                     await self.sleep_function(action.duration_seconds)
+                    # Simulation-only injection used by the acceptance harness.
+                    # Honored only on the loopback endpoint so it cannot affect
+                    # a non-simulation system address.
+                    if (
+                        os.environ.get("NIGHTJAR_SIM_FAIL_DURING_HOLD") == "1"
+                        and "127.0.0.1" in self.system_address
+                    ):
+                        raise MavsdkExecutorError(
+                            "Simulation-only injected failure during hold."
+                        )
 
                 elif isinstance(action, LandAction):
                     await drone.action.land()
