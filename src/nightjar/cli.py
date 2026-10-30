@@ -70,7 +70,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("mission", type=Path)
     run.add_argument(
         "--executor",
-        choices=("dry-run",),
+        choices=("dry-run", "mavsdk"),
         required=True,
         help="Executor authorized by the signed approval.",
     )
@@ -129,24 +129,58 @@ def main() -> int:
         print(f"Authorization material could not be loaded: {exc}")
         return 3
 
-    try:
-        verify_and_consume_approval(
-            envelope=envelope,
-            public_key=public_key,
-            mission=mission,
-            limits=limits,
-            expected_executor=args.executor,
-            nonce_store=nonce_store,
-        )
-    except (ApprovalError, ApprovalReplayError, sqlite3.Error) as exc:
-        print(f"Execution blocked: {exc}")
-        return 4
-
-    print("Signed approval verified and consumed.")
-
     if args.executor == "dry-run":
+        try:
+            verify_and_consume_approval(
+                envelope=envelope,
+                public_key=public_key,
+                mission=mission,
+                limits=limits,
+                expected_executor=args.executor,
+                nonce_store=nonce_store,
+            )
+        except (ApprovalError, ApprovalReplayError, sqlite3.Error) as exc:
+            print(f"Execution blocked: {exc}")
+            return 4
+
+        print("Signed approval verified and consumed.")
+
         result = DryRunExecutor().execute(mission)
         print(f"Dry run complete. Audit log: {result.log_path}")
+        return 0
+
+    if args.executor == "mavsdk":
+        # Approval consumption stays inside MavsdkExecutor so capability and
+        # policy checks can reject the mission before the nonce is spent.
+        try:
+            from nightjar.mavsdk_executor import (
+                MavsdkExecutor,
+                MavsdkExecutorError,
+                MavsdkPolicyRejectedError,
+                UnsupportedMavsdkActionError,
+            )
+
+            executor = MavsdkExecutor(
+                public_key=public_key,
+                nonce_store=nonce_store,
+                limits=limits,
+            )
+            result = executor.execute(mission, approval=envelope)
+        except (ApprovalError, ApprovalReplayError, sqlite3.Error) as exc:
+            print(f"Execution blocked: {exc}")
+            return 4
+        except (UnsupportedMavsdkActionError, MavsdkPolicyRejectedError) as exc:
+            print(f"Execution blocked: {exc}")
+            return 4
+        except MavsdkExecutorError as exc:
+            print(f"Execution failed: {exc}")
+            return 5
+        except Exception as exc:  # noqa: BLE001
+            print(f"Execution failed: {exc}")
+            return 5
+
+        print("Signed approval verified and consumed.")
+        print(f"MAVSDK simulation complete. Audit log: {result.log_path}")
         return 0
 
     print(f"Unsupported executor: {args.executor}")

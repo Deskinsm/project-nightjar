@@ -133,7 +133,7 @@ The executor:
 
 The default simulation endpoint uses `127.0.0.1`.
 
-The MAVSDK executor is intentionally not yet connected to the signed CLI authorization path.
+The restricted MAVSDK executor is now reachable through the signed CLI via `--executor mavsdk`. Approval verification and nonce consumption occur inside the executor after capability and policy checks, so unsupported actions do not consume an approval.
 
 ## Verified Milestones
 
@@ -257,23 +257,23 @@ Execution may begin only after the signed approval has been verified and atomica
 - The nonce database is not replicated across executor hosts.
 - Audit records are append-only JSONL but are not cryptographically chained or externally anchored.
 - Audit-log availability is not yet separated from recovery behavior.
-- The primary CLI currently authorizes only the dry-run executor.
+- The primary CLI authorizes the dry-run executor and the restricted MAVSDK executor (`takeoff` / `hold` / `land`).
 - No production key-management or key-rotation process exists.
 - Testing has used PX4 software simulation.
 - No hardware-in-the-loop testing has occurred.
 - No physical aircraft has been controlled by Nightjar.
 - The architecture does not protect against a fully compromised executor operating system.
-- The restricted MAVSDK executor is not yet connected to the signed CLI authorization path.
 - `goto` and `return_home` are intentionally unsupported by the MAVSDK executor until their coordinate and behavioral semantics are defined.
 - Takeoff and landing state confirmation have been tested only in PX4 software simulation.
+- A signed CLI run against a live PX4 software simulation (successful completion, replay rejection, and at least one recoverable failure) has not yet been recorded as release evidence.
 
 ## Development Roadmap
 
 Near-term work:
 
-1. Connect signed approvals to the restricted MAVSDK executor in PX4 simulation.
-2. Ensure the exact authorized `PolicyLimits` instance governs MAVSDK execution.
-3. Define executor abort and recovery behavior for failures after arming.
+1. Record a signed CLI run against live PX4 software simulation (successful completion, replay rejection, and at least one recoverable failure scenario).
+2. Ensure the exact authorized `PolicyLimits` instance governs MAVSDK execution. (Done in the CLI integration.)
+3. Define executor abort and recovery behavior for failures after arming. (Merged in prior recovery work.)
 4. Separate structural schema limits from operational policy limits.
 5. Define recovery behavior independent of audit writes.
 6. Introduce an audit-sink abstraction.
@@ -287,6 +287,7 @@ Completed roadmap milestones:
 - Non-finite mission-value rejection
 - Policy-controlled restricted MAVSDK executor
 - Telemetry-confirmed takeoff and landing in PX4 simulation
+- Signed CLI dispatch to the restricted MAVSDK executor (takeoff / hold / land) with approval consumption inside the executor
 
 Potential later work:
 

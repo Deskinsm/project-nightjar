@@ -1,0 +1,17 @@
+{
+  "mission_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+  "description": "Take off to five meters, hold for ten seconds, and land. Restricted MAVSDK simulation example.",
+  "actions": [
+    {
+      "type": "takeoff",
+      "altitude_m": 5
+    },
+    {
+      "type": "hold",
+      "duration_seconds": 10
+    },
+    {
+      "type": "land"
+    }
+  ]
+}
