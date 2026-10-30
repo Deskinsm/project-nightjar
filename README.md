@@ -116,6 +116,8 @@ The restricted `MavsdkExecutor`:
 - records mission and action lifecycle events in the audit log
 - performs telemetry-based recovery on failure after arming
 
+Approval consumption for the MAVSDK path happens inside the executor before any connection or flight attempt. If the connection or flight later fails, the approval has already been consumed even though the CLI only prints “Signed approval verified and consumed.” after a successful completion. A failed run (exit code 5) still spends the nonce; retries require a fresh signed approval.
+
 The signed CLI path and the restricted MAVSDK executor are now connected for this limited simulation surface.
 
 The repository does not include a private signing key or reusable approval envelope. Tests generate ephemeral Ed25519 keys in temporary directories.
