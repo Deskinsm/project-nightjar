@@ -146,7 +146,7 @@ Scenarios are judged by outcome, not exit code alone:
 | Scenario | Required evidence |
 |---|---|
 | Signed mission | Exit 0, success message, and a `mission_completed` audit record |
-| Replayed approval | Exit 4, “already been used” rejection, and no audit file (system creation never occurs) |
+| Replayed approval | Exit 4, “already been used” rejection, and no audit file (supporting evidence that the executor did not reach `mission_started`; direct proof that system creation never occurs lives in the regression tests) |
 | Controlled failure | Exit 5, the acceptance-only injected error visible in stdout and audit, `recovery_status == "landing_confirmed"`, and no recovery error |
 
 The controlled-failure case uses `scripts/acceptance_failure_adapter.py`, which is not part of the normal execution path. It constructs a normal `MavsdkExecutor` with a sleep function that raises during hold. The connection remains available so recovery can land the vehicle. Inherited fault-injection environment variables are cleared for the success and replay scenarios.

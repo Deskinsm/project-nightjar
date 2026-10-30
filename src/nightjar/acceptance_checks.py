@@ -14,15 +14,19 @@ from pathlib import Path
 INJECTED_ERROR = "Acceptance-only injected failure during hold."
 
 
-def _read_audit(path: Path | None) -> list[dict]:
+def _read_audit(path: Path | None) -> tuple[list[dict] | None, str | None]:
+    """Return (records, error). error is set on parse failure so callers can FAIL cleanly."""
     if path is None or not path.exists():
-        return []
+        return [], None
     records = []
-    for line in path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if line:
-            records.append(json.loads(line))
-    return records
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line:
+                records.append(json.loads(line))
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError) as exc:
+        return None, f"audit could not be parsed: {exc}"
+    return records, None
 
 
 def signed_mission_passed(*, exit_code: int, stdout: str, audit_path: Path | None) -> tuple[bool, str]:
@@ -31,7 +35,9 @@ def signed_mission_passed(*, exit_code: int, stdout: str, audit_path: Path | Non
         return False, f"exit code {exit_code}, expected 0"
     if "MAVSDK simulation complete" not in stdout:
         return False, "missing success confirmation in stdout"
-    records = _read_audit(audit_path)
+    records, error = _read_audit(audit_path)
+    if error:
+        return False, error
     if not records:
         return False, "required audit log is missing"
     completed = [r for r in records if r.get("event") == "mission_completed"]
@@ -46,16 +52,24 @@ def replay_rejected(
     stdout: str,
     audit_path: Path | None,
 ) -> tuple[bool, str]:
-    """Require the already-used rejection and no audit (no system creation)."""
+    """Require the already-used rejection.
+
+    Absence of an audit file is supporting evidence that the executor did
+    not proceed to mission_started. Direct proof that MAVSDK system
+    creation never occurs on replay lives in the existing regression
+    tests, because the executor creates the system before writing the
+    first audit record.
+    """
     if exit_code != 4:
         return False, f"exit code {exit_code}, expected 4"
     if "already been used" not in stdout and "already used" not in stdout.lower():
         return False, "missing already-used rejection in stdout"
-    # System creation and mission_started occur only after nonce consumption.
-    # A correctly rejected replay must leave no audit file.
     if audit_path is not None and audit_path.exists():
-        return False, "replay produced an audit log; system creation may have occurred"
-    return True, "replay rejected before system creation"
+        return False, "replay produced an audit log (supporting evidence of early progress)"
+    return True, (
+        "replay rejected with already-used; no audit written "
+        "(supporting evidence; system-creation proof is in regression tests)"
+    )
 
 
 def controlled_failure_recovered(
@@ -69,7 +83,9 @@ def controlled_failure_recovered(
         return False, f"exit code {exit_code}, expected 5"
     if INJECTED_ERROR not in stdout:
         return False, "injected error not visible in stdout"
-    records = _read_audit(audit_path)
+    records, error = _read_audit(audit_path)
+    if error:
+        return False, error
     if not records:
         return False, "required audit log is missing"
     failed = [r for r in records if r.get("event") == "mission_failed"]

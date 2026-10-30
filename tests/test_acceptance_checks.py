@@ -78,6 +78,27 @@ def test_replay_requires_already_used_and_no_audit(tmp_path: Path) -> None:
     assert "audit" in detail
 
 
+def test_malformed_audit_is_a_failure_not_an_exception(tmp_path: Path) -> None:
+    bad = tmp_path / "bad.jsonl"
+    bad.write_text("{not valid json\n", encoding="utf-8")
+
+    ok, detail = signed_mission_passed(
+        exit_code=0,
+        stdout="MAVSDK simulation complete.",
+        audit_path=bad,
+    )
+    assert not ok
+    assert "parsed" in detail
+
+    ok, detail = controlled_failure_recovered(
+        exit_code=5,
+        stdout=f"Execution failed: {INJECTED_ERROR}",
+        audit_path=bad,
+    )
+    assert not ok
+    assert "parsed" in detail
+
+
 def test_controlled_failure_requires_landing_confirmed(tmp_path: Path) -> None:
     audit = tmp_path / "m.jsonl"
     _write_audit(

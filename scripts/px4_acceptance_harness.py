@@ -386,9 +386,20 @@ def main() -> int:
         "",
         "## Results",
         "",
+        "CLI validation (via `nightjar run --executor mavsdk`):",
         f"- Signed mission: {'PASS' if success['passed'] else 'FAIL'} — {success['detail']}",
         f"- Replay rejection: {'PASS' if replay['passed'] else 'FAIL'} — {replay['detail']}",
+        "",
+        "Executor recovery validation (via acceptance-only adapter, not `nightjar run`):",
         f"- Controlled failure: {'PASS' if failure['passed'] else 'FAIL'} — {failure['detail']}",
+        "",
+        (
+            "Absence of an audit on replay is supporting evidence that the "
+            "executor did not reach mission_started. Direct proof that MAVSDK "
+            "system creation never occurs on a rejected replay is provided by "
+            "the existing regression tests, because the executor creates the "
+            "system before writing the first audit record."
+        ),
         "",
         (
             "See each scenario directory for the exact command, exit code, "
