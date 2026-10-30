@@ -31,6 +31,10 @@ class PolicyLimits:
     max_total_horizontal_distance_m: float = 120.0
     max_goto_actions: int = 5
 
+    # Home re-verification tolerances. Covered by the policy hash.
+    home_horizontal_tolerance_m: float = 2.0
+    home_vertical_tolerance_m: float = 3.0
+
 
 @dataclass(frozen=True)
 class PolicyDecision:

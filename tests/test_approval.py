@@ -7,10 +7,18 @@ from nightjar.approval import (
     sign_approval,
     verify_approval,
 )
+from nightjar.home import snapshot_from_telemetry
 from nightjar.models import Mission
 from nightjar.policy import PolicyLimits
 
 NOW = 1_800_000_000
+
+DEFAULT_HOME = snapshot_from_telemetry(
+    latitude_deg=47.3977419,
+    longitude_deg=8.5455938,
+    absolute_altitude_m=488.0,
+    captured_at="2026-01-01T00:00:00+00:00",
+)
 
 
 def build_mission(altitude_m: float = 5) -> Mission:
@@ -40,6 +48,7 @@ def build_signed_approval():
         mission=mission,
         limits=limits,
         executor="mavsdk",
+        home=DEFAULT_HOME,
         ttl_seconds=300,
         now_unix=NOW,
         nonce="n" * 32,

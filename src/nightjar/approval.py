@@ -12,6 +12,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
 )
 from pydantic import Field, model_validator
 
+from nightjar.home import FRAME_ID, HomeSnapshot, home_sha256
 from nightjar.models import Mission, StrictModel
 from nightjar.policy import PolicyLimits
 from nightjar.security import canonical_json_bytes, mission_sha256, policy_sha256
@@ -22,8 +23,17 @@ class ApprovalError(ValueError):
 
 
 class ApprovalPayload(StrictModel):
+    """Signed approval binding. Schema requires home binding; no legacy fallback."""
+
     mission_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     policy_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    home_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    frame_id: str = Field(min_length=1, max_length=64)
+    # Canonical integers of the bound home, covered by the signature so the
+    # executor can compare a live home without a separate snapshot file.
+    home_latitude_e7: int
+    home_longitude_e7: int
+    home_altitude_mm: int
     executor: str = Field(min_length=1, max_length=64)
     issued_at_unix: int = Field(ge=0)
     expires_at_unix: int = Field(gt=0)
@@ -46,18 +56,26 @@ def build_approval_payload(
     mission: Mission,
     limits: PolicyLimits,
     executor: str,
+    home: HomeSnapshot,
     ttl_seconds: int = 300,
     now_unix: int | None = None,
     nonce: str | None = None,
 ) -> ApprovalPayload:
     if ttl_seconds <= 0:
         raise ValueError("Approval TTL must be positive.")
+    if home.source != "telemetry":
+        raise ValueError("Home snapshot must come from telemetry.")
 
     issued_at = int(time.time()) if now_unix is None else now_unix
 
     return ApprovalPayload(
         mission_sha256=mission_sha256(mission),
         policy_sha256=policy_sha256(limits),
+        home_sha256=home_sha256(home),
+        frame_id=FRAME_ID,
+        home_latitude_e7=home.latitude_e7,
+        home_longitude_e7=home.longitude_e7,
+        home_altitude_mm=home.altitude_mm,
         executor=executor,
         issued_at_unix=issued_at,
         expires_at_unix=issued_at + ttl_seconds,
