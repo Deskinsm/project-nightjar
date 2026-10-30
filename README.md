@@ -153,21 +153,17 @@ The controlled-failure case uses `scripts/acceptance_failure_adapter.py`, which 
 
 The harness isolates the platform-appropriate audit directory by setting both `XDG_STATE_HOME` and `LOCALAPPDATA`, and fails acceptance when a required audit log is missing.
 
-## Next milestone
+Acceptance uses a fresh PX4 boot before the recovery scenario. Set `NIGHTJAR_PX4_RESTART_CMD` to a command that stops the current PX4 and starts a new, armable instance. See `docs/px4-acceptance.md` for the procedure used to produce the Phase 1 evidence and for the timing note on simulator restart.
 
-Validate the signed CLI path against a live PX4 software simulation, record successful completion and replay rejection, and exercise at least one recoverable failure scenario. That evidence is required before treating the authorized simulation path as a shippable v1.
+## Phase 1 status
 
-The intended demonstrated path is:
+The authorized simulation path has been demonstrated against PX4 software simulation on commit `52d6a14`:
 
-```text
-mission
-→ deterministic policy
-→ mission-bound signed approval
-→ signature / expiration / executor verification
-→ atomic replay protection
-→ restricted MAVSDK executor
-→ PX4 software simulation
-```
+- Signed CLI mission completes with telemetry-confirmed landing
+- Replayed approval is rejected before another connection
+- An injected airborne failure triggers landing recovery and preserves the original error
+
+Acceptance uses a fresh PX4 boot before the recovery scenario. See `docs/px4-acceptance.md` for the procedure, the restart scripts, and the timing note on simulator restart.
 
 Executable `goto`, `return_home`, ATAK execution, distributed replay protection, and physical-flight readiness remain outside the current simulation v1 boundary.
 

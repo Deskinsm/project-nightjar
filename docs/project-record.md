@@ -278,8 +278,7 @@ For the MAVSDK executor, approval verification and nonce consumption occur insid
 
 Near-term work:
 
-1. Run the PX4 acceptance harness (`python scripts/px4_acceptance_harness.py`) against a live software simulation and archive the resulting evidence bundle.
-2. Separate structural schema limits from operational policy limits.
+1. Separate structural schema limits from operational policy limits.
 3. Introduce an audit-sink abstraction.
 4. Add chained audit records and external anchoring.
 5. Define signing-key custody and rotation.
