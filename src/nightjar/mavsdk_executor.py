@@ -13,6 +13,13 @@ from nightjar.approval import SignedApproval
 from nightjar.audit import write_audit_record, write_audit_record_best_effort
 from nightjar.authorization import verify_and_consume_approval
 from nightjar.executor import ExecutionResult
+from nightjar.home import (
+    FRAME_ID,
+    HomeSnapshot,
+    home_sha256,
+    snapshot_from_telemetry,
+    within_tolerance,
+)
 from nightjar.models import HoldAction, LandAction, Mission, TakeoffAction
 from nightjar.policy import PolicyEngine, PolicyLimits
 from nightjar.replay import NonceStore
@@ -26,6 +33,14 @@ class MavsdkExecutorError(RuntimeError):
 
 class MavsdkPolicyRejectedError(MavsdkExecutorError):
     """Raised when a mission fails deterministic Nightjar policy."""
+
+
+class HomeUnavailableError(MavsdkExecutorError):
+    """Raised when a trusted home cannot be obtained from telemetry."""
+
+
+class HomeMismatchError(MavsdkExecutorError):
+    """Raised when the live home differs from the bound home beyond tolerance."""
 
 
 class UnsupportedMavsdkActionError(MavsdkExecutorError):
@@ -104,7 +119,7 @@ class MavsdkExecutor:
         drone_holder: list[Any] = []
 
         async def _run() -> ExecutionResult:
-            return await self._execute(mission, drone_holder)
+            return await self._execute(mission, approval, drone_holder)
 
         try:
             return asyncio.run(_run())
@@ -128,6 +143,7 @@ class MavsdkExecutor:
     async def _execute(
         self,
         mission: Mission,
+        approval: SignedApproval,
         drone_holder: list[Any] | None = None,
     ) -> ExecutionResult:
         drone = self.system_factory()
@@ -159,6 +175,12 @@ class MavsdkExecutor:
             await drone.connect(system_address=self.system_address)
             await self._wait_for_connection(drone)
 
+            # Re-verify the bound home before any vehicle command.
+            # Nonce is already consumed; a mismatch here burns the approval.
+            bound_home = self._bound_home(approval)
+            live_home = await self._read_home(drone)
+            self._verify_home(bound_home, live_home, phase="pre_arm", mission_id=mission.mission_id)
+
             for sequence, action in enumerate(mission.actions, start=1):
                 self._audit_writer(flight_committed)(
                     mission_id=mission.mission_id,
@@ -186,6 +208,17 @@ class MavsdkExecutor:
                     # Missing confirmation enters the existing cleanup path
                     # (takeoff_attempted stays False).
                     await self._wait_until_armed(drone)
+
+                    # PX4 can reset home on arming. Re-read and compare.
+                    # If it moved beyond tolerance, do not take off: disarm
+                    # through the existing armed-on-ground recovery path.
+                    post_arm_home = await self._read_home(drone)
+                    self._verify_home(
+                        bound_home,
+                        post_arm_home,
+                        phase="post_arm",
+                        mission_id=mission.mission_id,
+                    )
 
                     # Once armed confirmation is observed, takeoff requires
                     # landing recovery.
@@ -298,6 +331,83 @@ class MavsdkExecutor:
         await drone.action.land()
         await self._wait_until_landed(drone)
         return "landing_confirmed"
+
+    def _bound_home(self, approval: SignedApproval) -> HomeSnapshot:
+        """Reconstruct the bound home from the signed approval integers."""
+        payload = approval.payload
+        if payload.frame_id != FRAME_ID:
+            raise HomeMismatchError(f"Approval frame {payload.frame_id!r} is not {FRAME_ID!r}.")
+        snapshot = snapshot_from_telemetry(
+            latitude_deg=payload.home_latitude_e7 / 10_000_000,
+            longitude_deg=payload.home_longitude_e7 / 10_000_000,
+            absolute_altitude_m=payload.home_altitude_mm / 1_000,
+            captured_at="bound",
+        )
+        if home_sha256(snapshot) != payload.home_sha256:
+            raise HomeMismatchError("Approval home_sha256 does not match the signed home integers.")
+        return snapshot
+
+    async def _read_home(self, drone: Any) -> HomeSnapshot:
+        """Read home from telemetry, gated on health flags. Bounded timeout."""
+
+        async def wait() -> HomeSnapshot:
+            health_stream = getattr(drone.telemetry, "health", None)
+            home_stream = getattr(drone.telemetry, "home", None)
+            if health_stream is None or home_stream is None:
+                raise HomeUnavailableError("MAVSDK telemetry does not expose health or home.")
+            async for health in health_stream():
+                if getattr(health, "is_home_position_ok", False) and getattr(
+                    health, "is_global_position_ok", False
+                ):
+                    break
+            else:
+                raise HomeUnavailableError("Health stream ended before home was OK.")
+            async for home in home_stream():
+                return snapshot_from_telemetry(
+                    latitude_deg=home.latitude_deg,
+                    longitude_deg=home.longitude_deg,
+                    absolute_altitude_m=home.absolute_altitude_m,
+                )
+            raise HomeUnavailableError("Home stream ended before a position arrived.")
+
+        try:
+            return await asyncio.wait_for(wait(), timeout=self.connection_timeout_seconds)
+        except asyncio.TimeoutError as exc:
+            raise HomeUnavailableError(
+                f"Timed out waiting {self.connection_timeout_seconds:g} seconds for home."
+            ) from exc
+
+    def _verify_home(
+        self,
+        bound: HomeSnapshot,
+        live: HomeSnapshot,
+        *,
+        phase: str,
+        mission_id: Any,
+    ) -> None:
+        ok = within_tolerance(
+            bound,
+            live,
+            horizontal_m=self.limits.home_horizontal_tolerance_m,
+            vertical_m=self.limits.home_vertical_tolerance_m,
+        )
+        write_audit_record(
+            mission_id=mission_id,
+            event="home_check",
+            details={
+                "phase": phase,
+                "frame_id": FRAME_ID,
+                "home_sha256": home_sha256(bound),
+                "within_tolerance": ok,
+                "bound": bound.canonical(),
+                "live": live.canonical(),
+            },
+            log_directory=self.log_directory,
+        )
+        if not ok:
+            raise HomeMismatchError(
+                f"Home mismatch at {phase}: live home exceeds policy tolerance."
+            )
 
     async def _wait_until_armed(self, drone: Any) -> None:
         """Wait for armed telemetry. An arm call that does not raise is not proof."""
