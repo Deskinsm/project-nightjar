@@ -192,25 +192,29 @@ A live CLI test demonstrated:
 
 Current branch:
 
-`main`
+`enable-authorized-mavsdk-cli` (one commit ahead of `main`)
 
 Latest verified implementation checkpoint:
 
-`0a5b161 Confirm takeoff altitude before continuing`
+`61f0028 Enable authorized MAVSDK simulation from the CLI`
 
 Current automated test count:
 
-`41 passing tests`
+`89 passing tests`
 
 Latest validation:
 
-- Windows / Python 3.11: 41 passing tests
-- Linux / Python 3.10: 41 passing tests
+- Full suite: 89 passing tests
 - Ruff checks passing
-- PX4 SIH simulation completed successfully with telemetry-confirmed takeoff and landing
+- CI green on the branch
+- Restricted MAVSDK executor previously verified against PX4 SIH simulation with telemetry-confirmed takeoff and landing
+- Signed CLI path to the restricted MAVSDK executor is now wired (approval consumption inside the executor)
 
 Primary milestone commits:
 
+- `61f0028 Enable authorized MAVSDK simulation from the CLI`
+- `8a15e01 Add bounded MAVSDK flight failure recovery`
+- `451e3cb Make cancellation recovery tests portable to Python 3.10`
 - `0a5b161 Confirm takeoff altitude before continuing`
 - `1b6f8c1 Add restricted MAVSDK executor`
 - `71aad27 Add optional MAVSDK flight dependency`
@@ -256,7 +260,6 @@ Execution may begin only after the signed approval has been verified and atomica
 - Replay protection currently applies only to processes sharing the same SQLite database.
 - The nonce database is not replicated across executor hosts.
 - Audit records are append-only JSONL but are not cryptographically chained or externally anchored.
-- Audit-log availability is not yet separated from recovery behavior.
 - The primary CLI authorizes the dry-run executor and the restricted MAVSDK executor (`takeoff` / `hold` / `land`).
 - No production key-management or key-rotation process exists.
 - Testing has used PX4 software simulation.
@@ -267,27 +270,31 @@ Execution may begin only after the signed approval has been verified and atomica
 - Takeoff and landing state confirmation have been tested only in PX4 software simulation.
 - A signed CLI run against a live PX4 software simulation (successful completion, replay rejection, and at least one recoverable failure) has not yet been recorded as release evidence.
 
+### Failures after authorization
+
+For the MAVSDK executor, approval verification and nonce consumption occur inside `MavsdkExecutor.execute()` before any connection or flight attempt. If the connection, takeoff, hold, or landing later fails (or times out), the approval has already been consumed. The CLI only prints “Signed approval verified and consumed.” after the executor returns successfully. A failure after consumption therefore produces an “Execution failed” message (exit code 5) without that confirmation line, but the nonce is still spent. Retries require a fresh signed approval.
+
 ## Development Roadmap
 
 Near-term work:
 
 1. Record a signed CLI run against live PX4 software simulation (successful completion, replay rejection, and at least one recoverable failure scenario).
-2. Ensure the exact authorized `PolicyLimits` instance governs MAVSDK execution. (Done in the CLI integration.)
-3. Define executor abort and recovery behavior for failures after arming. (Merged in prior recovery work.)
-4. Separate structural schema limits from operational policy limits.
-5. Define recovery behavior independent of audit writes.
-6. Introduce an audit-sink abstraction.
-7. Add chained audit records and external anchoring.
-8. Define signing-key custody and rotation.
-9. Add hardware-in-the-loop testing.
+2. Separate structural schema limits from operational policy limits.
+3. Introduce an audit-sink abstraction.
+4. Add chained audit records and external anchoring.
+5. Define signing-key custody and rotation.
+6. Add hardware-in-the-loop testing.
 
-Completed roadmap milestones:
+Completed in this and prior milestones:
 
 - Aggregate mission budgets
 - Non-finite mission-value rejection
 - Policy-controlled restricted MAVSDK executor
 - Telemetry-confirmed takeoff and landing in PX4 simulation
+- Bounded failure recovery after arming (telemetry-based disarm or landing, timeout, and cancellation handling)
+- Audit writes that are strict before takeoff acceptance and best-effort afterward, so an audit failure cannot interrupt an airborne recovery
 - Signed CLI dispatch to the restricted MAVSDK executor (takeoff / hold / land) with approval consumption inside the executor
+- Exact authorized `PolicyLimits` instance passed into the MAVSDK executor
 
 Potential later work:
 
