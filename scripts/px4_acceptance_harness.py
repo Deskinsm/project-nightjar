@@ -5,11 +5,12 @@ Produces a reviewable evidence bundle for three scenarios:
 
 1. Signed mission completes (exit 0) with telemetry-confirmed landing.
 2. Replaying the same approval is rejected before MAVSDK connection.
-3. A simulation-only failure during hold triggers landing recovery;
-   the original error remains visible.
+3. An acceptance-only failure during hold triggers landing recovery;
+   the original error remains visible and recovery_status is landing_confirmed.
 
 Private keys are generated in a temporary directory and are never
-copied into the evidence bundle.
+copied into the evidence bundle. The mission, approvals, and public key
+are preserved in the bundle.
 
 Prerequisites
 -------------
@@ -49,11 +50,18 @@ from cryptography.hazmat.primitives.serialization import (
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
+from nightjar.acceptance_checks import (
+    INJECTED_ERROR,
+    controlled_failure_recovered,
+    replay_rejected,
+    signed_mission_passed,
+)
 from nightjar.approval import build_approval_payload, sign_approval
 from nightjar.cli import load_mission
 from nightjar.policy import PolicyLimits
 
 MISSION_PATH = ROOT / "missions" / "mavsdk_simulation_mission.json"
+ADAPTER_PATH = ROOT / "scripts" / "acceptance_failure_adapter.py"
 SYSTEM_ADDRESS = "udpin://127.0.0.1:14540"
 
 
@@ -133,51 +141,48 @@ def issue_approval(
     )
 
 
-def run_cli(
+def isolated_env(state_home: Path, extra: dict[str, str] | None = None) -> dict[str, str]:
+    """Return an environment that isolates audit state and clears injection settings.
+
+    Sets both XDG_STATE_HOME and LOCALAPPDATA so the platform-appropriate
+    audit directory used by Nightjar lands inside the isolated tree on
+    Linux/macOS and Windows alike. Inherited fault-injection variables
+    are removed.
+    """
+    env = os.environ.copy()
+    env.pop("NIGHTJAR_SIM_FAIL_DURING_HOLD", None)
+    env["XDG_STATE_HOME"] = str(state_home)
+    env["LOCALAPPDATA"] = str(state_home)
+    if extra:
+        env.update(extra)
+    return env
+
+
+def expected_audit_dir(state_home: Path) -> Path:
+    """Return the audit directory Nightjar will use given the isolated env."""
+    # Matches nightjar.audit.default_audit_directory for both platforms.
+    return (state_home / "nightjar" / "audit").resolve()
+
+
+def run_command(
+    cmd: list[str],
     *,
-    mission_path: Path,
-    approval_path: Path,
-    public_key_path: Path,
-    nonce_db: Path,
     state_home: Path,
     extra_env: dict[str, str] | None = None,
-) -> tuple[int, str, str, list[str]]:
-    cmd = [
-        sys.executable,
-        "-m",
-        "nightjar.cli",
-        "run",
-        str(mission_path),
-        "--executor",
-        "mavsdk",
-        "--approval-file",
-        str(approval_path),
-        "--public-key-file",
-        str(public_key_path),
-        "--nonce-db",
-        str(nonce_db),
-    ]
-    env = os.environ.copy()
-    env["XDG_STATE_HOME"] = str(state_home)
-    if extra_env:
-        env.update(extra_env)
-
+) -> tuple[int, str, str]:
     result = subprocess.run(
         cmd,
         capture_output=True,
         text=True,
-        env=env,
+        env=isolated_env(state_home, extra_env),
         cwd=ROOT,
         check=False,
     )
-    return result.returncode, result.stdout, result.stderr, cmd
+    return result.returncode, result.stdout, result.stderr
 
 
 def collect_audit(state_home: Path, mission_id: str) -> Path | None:
-    audit_dir = state_home / "nightjar" / "audit"
-    if not audit_dir.exists():
-        return None
-    candidate = audit_dir / f"{mission_id}.jsonl"
+    candidate = expected_audit_dir(state_home) / f"{mission_id}.jsonl"
     return candidate if candidate.exists() else None
 
 
@@ -191,6 +196,8 @@ def write_scenario(
     stderr: str,
     audit_src: Path | None,
     notes: str,
+    passed: bool,
+    detail: str,
 ) -> dict:
     scenario_dir = bundle / name
     scenario_dir.mkdir(parents=True, exist_ok=True)
@@ -200,6 +207,10 @@ def write_scenario(
     (scenario_dir / "stdout.txt").write_text(stdout, encoding="utf-8")
     (scenario_dir / "stderr.txt").write_text(stderr, encoding="utf-8")
     (scenario_dir / "notes.txt").write_text(notes + "\n", encoding="utf-8")
+    (scenario_dir / "result.txt").write_text(
+        f"{'PASS' if passed else 'FAIL'}: {detail}\n",
+        encoding="utf-8",
+    )
 
     if audit_src is not None:
         shutil.copy2(audit_src, scenario_dir / "audit.jsonl")
@@ -209,6 +220,8 @@ def write_scenario(
         "exit_code": exit_code,
         "command": command,
         "audit_present": audit_src is not None,
+        "passed": passed,
+        "detail": detail,
         "notes": notes,
     }
 
@@ -225,10 +238,16 @@ def main() -> int:
     mission = load_mission(MISSION_PATH)
     mission_id = str(mission.mission_id)
 
+    # Preserve the mission in the bundle.
+    shutil.copy2(MISSION_PATH, bundle / "mission.json")
+
     # Private keys live only in this temporary directory.
     with tempfile.TemporaryDirectory(prefix="nightjar-keys-") as key_dir_name:
         key_dir = Path(key_dir_name)
         _private_path, public_path, private_key = write_key_pair(key_dir)
+
+        # Preserve the public key (never the private key).
+        shutil.copy2(public_path, bundle / "approver-public.pem")
 
         # --- Scenario 1: successful signed mission ---
         print("=== Signed mission ===")
@@ -236,15 +255,26 @@ def main() -> int:
         nonce_db = key_dir / "success.sqlite3"
         state_home = key_dir / "state-success"
         issue_approval(MISSION_PATH, private_key, approval, nonce="s" * 32)
+        shutil.copy2(approval, bundle / "approval-success.json")
 
-        code, out, err, cmd = run_cli(
-            mission_path=MISSION_PATH,
-            approval_path=approval,
-            public_key_path=public_path,
-            nonce_db=nonce_db,
-            state_home=state_home,
-        )
+        cmd = [
+            sys.executable,
+            "-m",
+            "nightjar.cli",
+            "run",
+            str(MISSION_PATH),
+            "--executor",
+            "mavsdk",
+            "--approval-file",
+            str(approval),
+            "--public-key-file",
+            str(public_path),
+            "--nonce-db",
+            str(nonce_db),
+        ]
+        code, out, err = run_command(cmd, state_home=state_home)
         audit = collect_audit(state_home, mission_id)
+        ok, detail = signed_mission_passed(exit_code=code, stdout=out, audit_path=audit)
         success = write_scenario(
             bundle,
             "signed_mission",
@@ -253,20 +283,19 @@ def main() -> int:
             stdout=out,
             stderr=err,
             audit_src=audit,
-            notes="Expected: exit 0, telemetry-confirmed landing.",
+            notes="Expected: exit 0, success message, mission_completed audit.",
+            passed=ok,
+            detail=detail,
         )
-        print(f"  exit {code}")
+        print(f"  {'PASS' if ok else 'FAIL'}: {detail}")
         print(out.strip() or "(no stdout)")
 
         # --- Scenario 2: replay rejection ---
         print("\n=== Replay rejection ===")
-        code2, out2, err2, cmd2 = run_cli(
-            mission_path=MISSION_PATH,
-            approval_path=approval,
-            public_key_path=public_path,
-            nonce_db=nonce_db,
-            state_home=key_dir / "state-replay",
-        )
+        cmd2 = cmd  # same approval and nonce database
+        code2, out2, err2 = run_command(cmd2, state_home=key_dir / "state-replay")
+        audit2 = collect_audit(key_dir / "state-replay", mission_id)
+        ok2, detail2 = replay_rejected(exit_code=code2, stdout=out2, audit_path=audit2)
         replay = write_scenario(
             bundle,
             "replay_rejection",
@@ -274,10 +303,12 @@ def main() -> int:
             exit_code=code2,
             stdout=out2,
             stderr=err2,
-            audit_src=None,
-            notes="Expected: exit 4, nonce already used, no MAVSDK connection.",
+            audit_src=audit2,
+            notes="Expected: exit 4, already-used rejection, no audit (no system creation).",
+            passed=ok2,
+            detail=detail2,
         )
-        print(f"  exit {code2}")
+        print(f"  {'PASS' if ok2 else 'FAIL'}: {detail2}")
         print(out2.strip() or "(no stdout)")
 
         # --- Scenario 3: controlled failure during hold ---
@@ -286,16 +317,24 @@ def main() -> int:
         nonce_db_fail = key_dir / "failure.sqlite3"
         state_home_fail = key_dir / "state-failure"
         issue_approval(MISSION_PATH, private_key, approval_fail, nonce="f" * 32)
+        shutil.copy2(approval_fail, bundle / "approval-failure.json")
 
-        code3, out3, err3, cmd3 = run_cli(
-            mission_path=MISSION_PATH,
-            approval_path=approval_fail,
-            public_key_path=public_path,
-            nonce_db=nonce_db_fail,
-            state_home=state_home_fail,
-            extra_env={"NIGHTJAR_SIM_FAIL_DURING_HOLD": "1"},
+        cmd3 = [
+            sys.executable,
+            str(ADAPTER_PATH),
+            str(MISSION_PATH),
+            "--approval-file",
+            str(approval_fail),
+            "--public-key-file",
+            str(public_path),
+            "--nonce-db",
+            str(nonce_db_fail),
+        ]
+        code3, out3, err3 = run_command(cmd3, state_home=state_home_fail)
+        audit3 = collect_audit(state_home_fail, mission_id)
+        ok3, detail3 = controlled_failure_recovered(
+            exit_code=code3, stdout=out3, audit_path=audit3
         )
-        audit_fail = collect_audit(state_home_fail, mission_id)
         failure = write_scenario(
             bundle,
             "controlled_failure",
@@ -303,13 +342,15 @@ def main() -> int:
             exit_code=code3,
             stdout=out3,
             stderr=err3,
-            audit_src=audit_fail,
+            audit_src=audit3,
             notes=(
-                "Expected: exit 5, original injected-failure error visible, "
-                "recovery lands the vehicle."
+                f"Expected: exit 5, {INJECTED_ERROR!r} visible, "
+                "recovery_status=landing_confirmed, no recovery error."
             ),
+            passed=ok3,
+            detail=detail3,
         )
-        print(f"  exit {code3}")
+        print(f"  {'PASS' if ok3 else 'FAIL'}: {detail3}")
         print(out3.strip() or "(no stdout)")
 
     # Manifest (no private key material)
@@ -325,7 +366,8 @@ def main() -> int:
         "scenarios": [success, replay, failure],
         "notes": (
             "Private signing keys were generated in a temporary directory "
-            "and were not included in this bundle."
+            "and were not included in this bundle. The mission, approvals, "
+            "and public key are included."
         ),
     }
     (bundle / "manifest.json").write_text(
@@ -344,18 +386,9 @@ def main() -> int:
         "",
         "## Results",
         "",
-        (
-            f"- Signed mission: exit {success['exit_code']} "
-            f"({'PASS' if success['exit_code'] == 0 else 'FAIL'})"
-        ),
-        (
-            f"- Replay rejection: exit {replay['exit_code']} "
-            f"({'PASS' if replay['exit_code'] == 4 else 'FAIL'})"
-        ),
-        (
-            f"- Controlled failure: exit {failure['exit_code']} "
-            f"({'PASS' if failure['exit_code'] == 5 else 'FAIL'})"
-        ),
+        f"- Signed mission: {'PASS' if success['passed'] else 'FAIL'} — {success['detail']}",
+        f"- Replay rejection: {'PASS' if replay['passed'] else 'FAIL'} — {replay['detail']}",
+        f"- Controlled failure: {'PASS' if failure['passed'] else 'FAIL'} — {failure['detail']}",
         "",
         (
             "See each scenario directory for the exact command, exit code, "
@@ -367,11 +400,7 @@ def main() -> int:
     (bundle / "SUMMARY.md").write_text("\n".join(summary_lines) + "\n", encoding="utf-8")
 
     print(f"\nEvidence written to {bundle}")
-    overall = (
-        success["exit_code"] == 0
-        and replay["exit_code"] == 4
-        and failure["exit_code"] == 5
-    )
+    overall = success["passed"] and replay["passed"] and failure["passed"]
     return 0 if overall else 1
 
 

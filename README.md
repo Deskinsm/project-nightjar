@@ -126,7 +126,7 @@ See `docs/project-record.md` for the full architecture, verified milestones, and
 
 ## PX4 acceptance harness
 
-A repeatable acceptance check lives at `scripts/px4_acceptance_harness.py`. It generates ephemeral keys, issues fresh approvals, invokes the actual CLI, and writes a reviewable evidence bundle. Private keys stay in a temporary directory and are never copied into the bundle.
+A repeatable acceptance check lives at `scripts/px4_acceptance_harness.py`. It generates ephemeral keys, issues fresh approvals, invokes the actual CLI (or an acceptance-only adapter for the failure case), and writes a reviewable evidence bundle. Private keys stay in a temporary directory and are never copied into the bundle. The mission, approvals, and public key are preserved.
 
 Prerequisites:
 
@@ -139,17 +139,19 @@ Run:
 python scripts/px4_acceptance_harness.py
 ```
 
-The harness produces `evidence/px4-acceptance-<timestamp>/` containing a `SUMMARY.md`, a `manifest.json` (commit SHA, dependency versions, platform), and one directory per scenario with the exact command, exit code, stdout, stderr, and audit log when produced.
+The harness produces `evidence/px4-acceptance-<timestamp>/` containing a `SUMMARY.md`, a `manifest.json` (commit SHA, dependency versions, platform), and one directory per scenario with the exact command, exit code, stdout, stderr, result, and audit log when produced.
 
-Scenarios:
+Scenarios are judged by outcome, not exit code alone:
 
-| Scenario | Expected result |
+| Scenario | Required evidence |
 |---|---|
-| Signed mission | Takeoff → hold → telemetry-confirmed landing; exit 0 |
-| Replayed approval | Same approval and nonce database rejected before MAVSDK connection; exit 4 |
-| Controlled failure | Simulation-only failure during hold (`NIGHTJAR_SIM_FAIL_DURING_HOLD=1`, loopback only) triggers landing recovery; original error remains visible; exit 5 |
+| Signed mission | Exit 0, success message, and a `mission_completed` audit record |
+| Replayed approval | Exit 4, “already been used” rejection, and no audit file (system creation never occurs) |
+| Controlled failure | Exit 5, the acceptance-only injected error visible in stdout and audit, `recovery_status == "landing_confirmed"`, and no recovery error |
 
-The failure injection is honored only when the system address contains `127.0.0.1`. It does not affect non-simulation endpoints.
+The controlled-failure case uses `scripts/acceptance_failure_adapter.py`, which is not part of the normal execution path. It constructs a normal `MavsdkExecutor` with a sleep function that raises during hold. The connection remains available so recovery can land the vehicle. Inherited fault-injection environment variables are cleared for the success and replay scenarios.
+
+The harness isolates the platform-appropriate audit directory by setting both `XDG_STATE_HOME` and `LOCALAPPDATA`, and fails acceptance when a required audit log is missing.
 
 ## Next milestone
 
