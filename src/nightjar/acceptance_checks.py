@@ -29,7 +29,9 @@ def _read_audit(path: Path | None) -> tuple[list[dict] | None, str | None]:
     return records, None
 
 
-def signed_mission_passed(*, exit_code: int, stdout: str, audit_path: Path | None) -> tuple[bool, str]:
+def signed_mission_passed(
+    *, exit_code: int, stdout: str, audit_path: Path | None
+) -> tuple[bool, str]:
     """Require exit 0, success message, and a completed audit record."""
     if exit_code != 0:
         return False, f"exit code {exit_code}, expected 0"
@@ -94,8 +96,7 @@ def controlled_failure_recovered(
     details = failed[-1].get("details") or {}
     if details.get("recovery_status") != "landing_confirmed":
         return False, (
-            f"recovery_status is {details.get('recovery_status')!r}, "
-            "expected landing_confirmed"
+            f"recovery_status is {details.get('recovery_status')!r}, expected landing_confirmed"
         )
     if details.get("recovery_error_type") is not None:
         return False, f"recovery_error_type is {details.get('recovery_error_type')!r}"

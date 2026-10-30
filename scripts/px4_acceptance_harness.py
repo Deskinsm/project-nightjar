@@ -67,14 +67,11 @@ SYSTEM_ADDRESS = "udpin://127.0.0.1:14540"
 
 def git_sha() -> str:
     try:
-        return (
-            subprocess.check_output(
-                ["git", "rev-parse", "HEAD"],
-                cwd=ROOT,
-                text=True,
-            )
-            .strip()
-        )
+        return subprocess.check_output(
+            ["git", "rev-parse", "HEAD"],
+            cwd=ROOT,
+            text=True,
+        ).strip()
     except (subprocess.CalledProcessError, FileNotFoundError):
         return "unknown"
 
@@ -332,9 +329,7 @@ def main() -> int:
         ]
         code3, out3, err3 = run_command(cmd3, state_home=state_home_fail)
         audit3 = collect_audit(state_home_fail, mission_id)
-        ok3, detail3 = controlled_failure_recovered(
-            exit_code=code3, stdout=out3, audit_path=audit3
-        )
+        ok3, detail3 = controlled_failure_recovered(exit_code=code3, stdout=out3, audit_path=audit3)
         failure = write_scenario(
             bundle,
             "controlled_failure",
