@@ -65,6 +65,7 @@ exit 0
 
 ```python
 """Wait until PX4 on udpin://127.0.0.1:14540 is armable, global pos OK, not in LAND."""
+
 import asyncio, sys, time
 from mavsdk import System
 from mavsdk.telemetry import FlightMode
@@ -72,30 +73,44 @@ from mavsdk.telemetry import FlightMode
 TIMEOUT = float(sys.argv[1]) if len(sys.argv) > 1 else 90.0
 PORT = int(sys.argv[2]) if len(sys.argv) > 2 else 50081
 
+
 async def check(d):
     await d.connect(system_address="udpin://127.0.0.1:14540")
     async for s in d.core.connection_state():
         if s.is_connected:
-            print("connected", flush=True); break
+            print("connected", flush=True)
+            break
     while True:
-        async for h in d.telemetry.health(): break
-        async for m in d.telemetry.flight_mode(): break
-        async for a in d.telemetry.armed(): break
-        print(f"armable={h.is_armable} global_ok={h.is_global_position_ok} mode={m} armed={a}", flush=True)
+        async for h in d.telemetry.health():
+            break
+        async for m in d.telemetry.flight_mode():
+            break
+        async for a in d.telemetry.armed():
+            break
+        print(
+            f"armable={h.is_armable} global_ok={h.is_global_position_ok} mode={m} armed={a}",
+            flush=True,
+        )
         if h.is_armable and h.is_global_position_ok and m != FlightMode.LAND and not a:
             return
         await asyncio.sleep(2)
+
 
 async def main():
     d = System(port=PORT)
     try:
         await asyncio.wait_for(check(d), timeout=TIMEOUT)
-        print("READY", flush=True); return 0
+        print("READY", flush=True)
+        return 0
     except asyncio.TimeoutError:
-        print(f"NOT READY after {TIMEOUT:g}s", flush=True); return 1
+        print(f"NOT READY after {TIMEOUT:g}s", flush=True)
+        return 1
     finally:
-        try: d._stop_mavsdk_server()
-        except Exception as e: print("stop failed", type(e).__name__)
+        try:
+            d._stop_mavsdk_server()
+        except Exception as e:
+            print("stop failed", type(e).__name__)
+
 
 sys.exit(asyncio.run(main()))
 ```
