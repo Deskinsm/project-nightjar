@@ -13,12 +13,10 @@ Nightjar is intentionally divided into four trust layers:
 3. **Authorization**: verifies a mission-bound Ed25519 approval and atomically consumes its nonce.
 4. **Executor**: receives only validated and policy-approved missions through narrowly defined execution boundaries. Signed execution paths additionally require explicit cryptographic authorization.
 
-The current repository contains two intentionally separate execution paths:
+The current repository contains two execution paths that share the same authorization boundary:
 
 - **Signed dry-run path:** deterministic policy, mission-bound Ed25519 authorization, replay protection, and dry-run execution.
-- **Restricted PX4 simulation path:** deterministic policy followed by a constrained MAVSDK executor supporting takeoff, hold, and land.
-
-The MAVSDK executor is not yet connected to the signed authorization path.
+- **Restricted PX4 simulation path:** the same signed authorization and policy checks, followed by a constrained MAVSDK executor supporting takeoff, hold, and land. Approval consumption occurs inside the executor so unsupported actions are rejected before the nonce is spent.
 
 Nightjar remains a research and simulation project. It has **not** controlled a physical aircraft.
 
@@ -99,18 +97,26 @@ The restricted MAVSDK executor currently supports only `takeoff`, `hold`, and `l
 
 Aggregate policy controls include total hold time, total horizontal travel, total `goto` actions, and total mission action count.
 
-`nightjar run` requires a signed, mission-bound approval envelope. The approval binds the mission hash, policy hash, executor, validity window, and nonce. A successfully verified approval is consumed exactly once before dry-run execution.
+`nightjar run` requires a signed, mission-bound approval envelope. The approval binds the mission hash, policy hash, executor, validity window, and nonce. A successfully verified approval is consumed exactly once.
 
-The restricted `MavsdkExecutor` provides a separate PX4 simulation execution boundary. It:
+Supported executors:
+
+- `dry-run`: verifies and consumes the approval, then simulates the mission without contacting a vehicle.
+- `mavsdk`: passes the approval, trusted public key, nonce store, and policy limits into the restricted `MavsdkExecutor`. Capability and policy checks occur before the nonce is consumed. The default endpoint is the loopback PX4 simulation address (`udpin://127.0.0.1:14540`).
+
+A restricted simulation mission containing only takeoff, hold, and land is provided at `missions/mavsdk_simulation_mission.json`. The existing `example_mission.json` includes `return_home`, which the MAVSDK executor rejects.
+
+The restricted `MavsdkExecutor`:
 
 - runs deterministic policy validation before MAVSDK system creation
-- rejects unsupported actions before connecting to PX4
+- rejects unsupported actions (including `goto` and `return_home`) before connecting to PX4 and before consuming the approval
 - supports takeoff, hold, and land
 - waits for relative-altitude telemetry before completing takeoff
 - waits for landing telemetry before completing land
 - records mission and action lifecycle events in the audit log
+- performs telemetry-based recovery on failure after arming
 
-The signed CLI authorization path and MAVSDK execution path are intentionally not connected yet.
+The signed CLI path and the restricted MAVSDK executor are now connected for this limited simulation surface.
 
 The repository does not include a private signing key or reusable approval envelope. Tests generate ephemeral Ed25519 keys in temporary directories.
 
@@ -118,9 +124,9 @@ See `docs/project-record.md` for the full architecture, verified milestones, and
 
 ## Next milestone
 
-Connect the signed authorization boundary to the restricted MAVSDK executor in PX4 simulation.
+Validate the signed CLI path against a live PX4 software simulation, record successful completion and replay rejection, and exercise at least one recoverable failure scenario. That evidence is required before treating the authorized simulation path as a shippable v1.
 
-The intended path is:
+The intended demonstrated path is:
 
 ```text
 mission
@@ -129,10 +135,10 @@ mission
 → signature / expiration / executor verification
 → atomic replay protection
 → restricted MAVSDK executor
-→ PX4 simulation
+→ PX4 software simulation
 ```
 
-This integration will preserve the rule that the planner cannot directly invoke MAVSDK or authorize its own actions.
+Executable `goto`, `return_home`, ATAK execution, distributed replay protection, and physical-flight readiness remain outside the current simulation v1 boundary.
 
 ## Personal records
 
