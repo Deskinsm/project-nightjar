@@ -28,6 +28,7 @@ Thumbs.db
 # Flight logs and generated artifacts
 logs/*
 !logs/.gitkeep
+evidence/
 
 # Personal aviation records must never be committed
 private/

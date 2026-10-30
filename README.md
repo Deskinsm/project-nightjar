@@ -124,6 +124,35 @@ The repository does not include a private signing key or reusable approval envel
 
 See `docs/project-record.md` for the full architecture, verified milestones, and known limitations.
 
+## PX4 acceptance harness
+
+A repeatable acceptance check lives at `scripts/px4_acceptance_harness.py`. It generates ephemeral keys, issues fresh approvals, invokes the actual CLI (or an acceptance-only adapter for the failure case), and writes a reviewable evidence bundle. Private keys stay in a temporary directory and are never copied into the bundle. The mission, approvals, and public key are preserved.
+
+Prerequisites:
+
+- Nightjar installed with the flight extra (`pip install -e ".[dev,flight]"`)
+- PX4 software simulation already running and reachable at `udpin://127.0.0.1:14540`
+
+Run:
+
+```bash
+python scripts/px4_acceptance_harness.py
+```
+
+The harness produces `evidence/px4-acceptance-<timestamp>/` containing a `SUMMARY.md`, a `manifest.json` (commit SHA, dependency versions, platform), and one directory per scenario with the exact command, exit code, stdout, stderr, result, and audit log when produced.
+
+Scenarios are judged by outcome, not exit code alone:
+
+| Scenario | Required evidence |
+|---|---|
+| Signed mission | Exit 0, success message, and a `mission_completed` audit record |
+| Replayed approval | Exit 4, “already been used” rejection, and no audit file (supporting evidence that the executor did not reach `mission_started`; direct proof that system creation never occurs lives in the regression tests) |
+| Controlled failure | Exit 5, the acceptance-only injected error visible in stdout and audit, `recovery_status == "landing_confirmed"`, and no recovery error |
+
+The controlled-failure case uses `scripts/acceptance_failure_adapter.py`, which is not part of the normal execution path. It constructs a normal `MavsdkExecutor` with a sleep function that raises during hold. The connection remains available so recovery can land the vehicle. Inherited fault-injection environment variables are cleared for the success and replay scenarios.
+
+The harness isolates the platform-appropriate audit directory by setting both `XDG_STATE_HOME` and `LOCALAPPDATA`, and fails acceptance when a required audit log is missing.
+
 ## Next milestone
 
 Validate the signed CLI path against a live PX4 software simulation, record successful completion and replay rejection, and exercise at least one recoverable failure scenario. That evidence is required before treating the authorized simulation path as a shippable v1.
