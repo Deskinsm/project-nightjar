@@ -10,7 +10,15 @@ from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 from nightjar.approval import build_approval_payload, sign_approval
 from nightjar.cli import load_mission, main
 from nightjar.executor import ExecutionResult
+from nightjar.home import snapshot_from_telemetry
 from nightjar.policy import PolicyLimits
+
+DEFAULT_HOME = snapshot_from_telemetry(
+    latitude_deg=47.3977419,
+    longitude_deg=8.5455938,
+    absolute_altitude_m=488.0,
+    captured_at="2026-01-01T00:00:00+00:00",
+)
 
 
 def write_public_key(
@@ -37,6 +45,7 @@ def create_mavsdk_authorization(
         mission=mission,
         limits=PolicyLimits(),
         executor=executor,
+        home=DEFAULT_HOME,
         ttl_seconds=300,
         now_unix=int(time.time()),
         nonce=nonce or ("m" * 32),
@@ -92,7 +101,7 @@ def test_mavsdk_successful_dispatch_and_replay_rejection(
     nonce_db = tmp_path / "approvals.sqlite3"
 
     # Skip the real MAVSDK connection; only exercise authorization + dispatch.
-    async def fake_execute(self, mission, drone_holder=None):
+    async def fake_execute(self, mission, approval, drone_holder=None):
         return ExecutionResult(completed=True, log_path=tmp_path / "audit.jsonl")
 
     import nightjar.mavsdk_executor as mev
@@ -152,7 +161,7 @@ def test_mavsdk_invalid_approval_does_not_consume(
     # A subsequent attempt with the correct key should succeed (nonce not spent).
     write_public_key(public_key, trusted)
 
-    async def fake_execute(self, mission, drone_holder=None):
+    async def fake_execute(self, mission, approval, drone_holder=None):
         return ExecutionResult(completed=True, log_path=tmp_path / "audit.jsonl")
 
     import nightjar.mavsdk_executor as mev

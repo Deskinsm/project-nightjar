@@ -14,6 +14,15 @@ from nightjar.approval import (
     build_approval_payload,
     sign_approval,
 )
+from nightjar.home import snapshot_from_telemetry
+
+# Default home used by tests that do not exercise home mismatch.
+DEFAULT_HOME = snapshot_from_telemetry(
+    latitude_deg=47.3977419,
+    longitude_deg=8.5455938,
+    absolute_altitude_m=488.0,
+    captured_at="2026-01-01T00:00:00+00:00",
+)
 from nightjar.audit import write_audit_record
 from nightjar.authorization import verify_and_consume_approval
 from nightjar.mavsdk_executor import (
@@ -42,6 +51,17 @@ class FakePosition:
         self.relative_altitude_m = relative_altitude_m
 
 
+class FakeHealth:
+    is_home_position_ok = True
+    is_global_position_ok = True
+
+
+class FakeHome:
+    latitude_deg = 47.3977419
+    longitude_deg = 8.5455938
+    absolute_altitude_m = 488.0
+
+
 class FakeTelemetry:
     async def position(self):
         yield FakePosition(relative_altitude_m=5.0)
@@ -51,6 +71,12 @@ class FakeTelemetry:
 
     async def armed(self):
         yield True
+
+    async def health(self):
+        yield FakeHealth()
+
+    async def home(self):
+        yield FakeHome()
 
 
 class FakeAction:
@@ -91,11 +117,13 @@ def build_approval(
     limits: PolicyLimits | None = None,
     executor: str = "mavsdk",
     nonce: str | None = None,
+    home=DEFAULT_HOME,
 ) -> SignedApproval:
     payload = build_approval_payload(
         mission=mission,
         limits=limits or PolicyLimits(),
         executor=executor,
+        home=home,
         ttl_seconds=300,
         now_unix=int(time.time()),
         nonce=nonce,
@@ -313,6 +341,12 @@ def test_hold_waits_until_takeoff_altitude_is_reached(tmp_path) -> None:
         async def armed(self):
             yield True
 
+        async def health(self):
+            yield FakeHealth()
+
+        async def home(self):
+            yield FakeHome()
+
         async def position(self):
             for altitude_m in (1.0, 3.0, 4.6):
                 self.altitudes_seen.append(altitude_m)
@@ -370,6 +404,12 @@ def test_takeoff_timeout_blocks_hold_and_is_audited(tmp_path) -> None:
     class StalledTelemetry:
         async def armed(self):
             yield True
+
+        async def health(self):
+            yield FakeHealth()
+
+        async def home(self):
+            yield FakeHome()
 
         async def position(self):
             yield FakePosition(relative_altitude_m=1.0)
@@ -775,7 +815,8 @@ def test_audit_failure_in_handler_does_not_mask_flight_exception(tmp_path, monke
     def writer_failing_from_third_call(**kwargs):
         nonlocal calls
         calls += 1
-        if calls >= 3:  # 1 = mission_started, 2 = TAKEOFF action_started, 3 = mission_failed
+        # mission_started, home_check, action_started, then mission_failed
+        if calls >= 4:
             raise OSError("simulated disk full")
         return real_writer(**kwargs)
 
@@ -800,7 +841,7 @@ def test_audit_failure_in_handler_does_not_mask_flight_exception(tmp_path, monke
     with pytest.raises(RuntimeError, match="simulated arm failure"):
         executor.execute(mission, approval=approval)
 
-    assert calls == 3
+    assert calls == 4
 
 
 @pytest.mark.parametrize("failure_phase", ["takeoff", "hold"])
@@ -973,6 +1014,7 @@ def test_cancellation_during_hold_attempts_land_then_propagates(tmp_path) -> Non
             raise
 
     private_key = Ed25519PrivateKey.generate()
+    approval = build_approval(private_key=private_key, mission=mission)
     executor = build_executor(
         private_key=private_key,
         tmp_path=tmp_path,
@@ -983,7 +1025,7 @@ def test_cancellation_during_hold_attempts_land_then_propagates(tmp_path) -> Non
 
     async def check_cancellation() -> None:
         with pytest.raises(asyncio.CancelledError) as caught:
-            await executor._execute(mission)
+            await executor._execute(mission, approval)
 
         assert len(cancellations) == 1
         assert caught.value is cancellations[0]
@@ -1022,6 +1064,7 @@ def test_second_cancellation_does_not_abandon_recovery(tmp_path) -> None:
     drone.action = InterruptedRecoveryAction(drone.calls)
 
     private_key = Ed25519PrivateKey.generate()
+    approval = build_approval(private_key=private_key, mission=mission)
     executor = build_executor(
         private_key=private_key,
         tmp_path=tmp_path,
@@ -1032,7 +1075,7 @@ def test_second_cancellation_does_not_abandon_recovery(tmp_path) -> None:
 
     async def check_cancellation() -> None:
         with pytest.raises(asyncio.CancelledError) as caught:
-            await executor._execute(mission)
+            await executor._execute(mission, approval)
 
         assert len(original_cancellations) == 1
         assert caught.value is original_cancellations[0]

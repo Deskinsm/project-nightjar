@@ -9,7 +9,15 @@ from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
 from nightjar.approval import build_approval_payload, sign_approval
 from nightjar.cli import load_mission, main
+from nightjar.home import snapshot_from_telemetry
 from nightjar.policy import PolicyLimits
+
+DEFAULT_HOME = snapshot_from_telemetry(
+    latitude_deg=47.3977419,
+    longitude_deg=8.5455938,
+    absolute_altitude_m=488.0,
+    captured_at="2026-01-01T00:00:00+00:00",
+)
 
 
 def write_public_key(
@@ -34,6 +42,7 @@ def create_authorization_files(
         mission=mission,
         limits=PolicyLimits(),
         executor="dry-run",
+        home=DEFAULT_HOME,
         ttl_seconds=300,
         now_unix=int(time.time()),
         nonce="n" * 32,

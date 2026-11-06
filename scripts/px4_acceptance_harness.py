@@ -59,6 +59,7 @@ from nightjar.acceptance_checks import (
 )
 from nightjar.approval import build_approval_payload, sign_approval
 from nightjar.cli import load_mission
+from nightjar.home import HomeSnapshot
 from nightjar.policy import PolicyLimits
 
 MISSION_PATH = ROOT / "missions" / "mavsdk_simulation_mission.json"
@@ -123,12 +124,14 @@ def issue_approval(
     private_key: Ed25519PrivateKey,
     approval_path: Path,
     nonce: str,
+    home: HomeSnapshot,
 ) -> None:
     mission = load_mission(mission_path)
     payload = build_approval_payload(
         mission=mission,
         limits=PolicyLimits(),
         executor="mavsdk",
+        home=home,
         ttl_seconds=300,
         now_unix=int(time.time()),
         nonce=nonce,
@@ -285,15 +288,26 @@ def main() -> int:
         key_dir = Path(key_dir_name)
         _private_path, public_path, private_key = write_key_pair(key_dir)
 
-        # Preserve the public key (never the private key).
-        shutil.copy2(public_path, bundle / "approver-public.pem")
+        # Home must come from telemetry, not from the client. The operator
+        # runs `nightjar home snapshot` against the live PX4 first and points
+        # the harness at the resulting file.
+        home_path = Path(os.environ.get("NIGHTJAR_HOME_SNAPSHOT", "home_snapshot.json"))
+        if not home_path.exists():
+            print(
+                f"Home snapshot not found at {home_path}. "
+                "Run `nightjar home snapshot --output home_snapshot.json` "
+                "against the live PX4 first, or set NIGHTJAR_HOME_SNAPSHOT."
+            )
+            return 2
+        home = HomeSnapshot.model_validate_json(home_path.read_text(encoding="utf-8"))
+        shutil.copy2(home_path, bundle / "home_snapshot.json")
 
         # --- Scenario 1: successful signed mission ---
         print("=== Signed mission ===")
         approval = key_dir / "approval-success.json"
         nonce_db = key_dir / "success.sqlite3"
         state_home = key_dir / "state-success"
-        issue_approval(MISSION_PATH, private_key, approval, nonce="s" * 32)
+        issue_approval(MISSION_PATH, private_key, approval, nonce="s" * 32, home=home)
         shutil.copy2(approval, bundle / "approval-success.json")
 
         cmd = [
@@ -396,7 +410,7 @@ def main() -> int:
         approval_fail = key_dir / "approval-failure.json"
         nonce_db_fail = key_dir / "failure.sqlite3"
         state_home_fail = key_dir / "state-failure"
-        issue_approval(MISSION_PATH, private_key, approval_fail, nonce="f" * 32)
+        issue_approval(MISSION_PATH, private_key, approval_fail, nonce="f" * 32, home=home)
         shutil.copy2(approval_fail, bundle / "approval-failure.json")
 
         cmd3 = [

@@ -92,11 +92,35 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional path to the consumed-approval SQLite database.",
     )
 
+    home = subparsers.add_parser(
+        "home",
+        help="Trusted home commands.",
+    )
+    home_sub = home.add_subparsers(dest="home_command", required=True)
+    snapshot = home_sub.add_parser(
+        "snapshot",
+        help="Capture the vehicle home from telemetry and write it to a file.",
+    )
+    snapshot.add_argument(
+        "--output",
+        type=Path,
+        required=True,
+        help="Path to write the home snapshot JSON.",
+    )
+    snapshot.add_argument(
+        "--system-address",
+        default="udpin://127.0.0.1:14540",
+        help="MAVSDK system address. Defaults to the loopback PX4 endpoint.",
+    )
+
     return parser
 
 
 def main() -> int:
     args = build_parser().parse_args()
+
+    if args.command == "home":
+        return _home_snapshot(args)
 
     try:
         mission = load_mission(args.mission)
@@ -154,6 +178,8 @@ def main() -> int:
         # policy checks can reject the mission before the nonce is spent.
         try:
             from nightjar.mavsdk_executor import (
+                HomeMismatchError,
+                HomeUnavailableError,
                 MavsdkExecutor,
                 MavsdkExecutorError,
                 MavsdkPolicyRejectedError,
@@ -172,6 +198,12 @@ def main() -> int:
         except (UnsupportedMavsdkActionError, MavsdkPolicyRejectedError) as exc:
             print(f"Execution blocked: {exc}")
             return 4
+        except HomeUnavailableError as exc:
+            print(f"Home unavailable: {exc}")
+            return 6
+        except HomeMismatchError as exc:
+            print(f"Home mismatch: {exc}")
+            return 7
         except MavsdkExecutorError as exc:
             print(f"Execution failed: {exc}")
             return 5
@@ -185,6 +217,58 @@ def main() -> int:
 
     print(f"Unsupported executor: {args.executor}")
     return 5
+
+
+def _home_snapshot(args: argparse.Namespace) -> int:
+    """Capture home from telemetry. Never accepts a client-supplied origin."""
+    import asyncio
+
+    from nightjar.home import snapshot_from_telemetry
+    from nightjar.mavsdk_executor import HomeUnavailableError, MavsdkExecutorError
+
+    async def capture() -> int:
+        try:
+            from mavsdk import System
+        except ImportError as exc:
+            print(f"MAVSDK is not installed: {exc}")
+            return 5
+
+        drone = System()
+        try:
+            await drone.connect(system_address=args.system_address)
+            async for state in drone.core.connection_state():
+                if state.is_connected:
+                    break
+            async for health in drone.telemetry.health():
+                if health.is_home_position_ok and health.is_global_position_ok:
+                    break
+            else:
+                raise HomeUnavailableError("Health stream ended before home was OK.")
+            async for home in drone.telemetry.home():
+                snapshot = snapshot_from_telemetry(
+                    latitude_deg=home.latitude_deg,
+                    longitude_deg=home.longitude_deg,
+                    absolute_altitude_m=home.absolute_altitude_m,
+                )
+                break
+            else:
+                raise HomeUnavailableError("Home stream ended before a position arrived.")
+        except (HomeUnavailableError, MavsdkExecutorError, asyncio.TimeoutError) as exc:
+            print(f"Home unavailable: {exc}")
+            return 6
+        finally:
+            stop = getattr(drone, "_stop_mavsdk_server", None)
+            if callable(stop):
+                try:
+                    stop()
+                except Exception as exc:  # noqa: BLE001
+                    print(f"MAVSDK server stop failed: {type(exc).__name__}")
+
+        args.output.write_text(snapshot.model_dump_json(indent=2), encoding="utf-8")
+        print(f"Home snapshot written to {args.output}")
+        return 0
+
+    return asyncio.run(capture())
 
 
 if __name__ == "__main__":
